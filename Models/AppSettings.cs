@@ -43,4 +43,14 @@ public class SearchSettings
 {
     public string SmartSearchKeywordDirectory { get; set; } = string.Empty;
     public string GoogleKeywordDirectory { get; set; } = string.Empty;
+    public GoogleWarmupSettings GoogleWarmup { get; set; } = new();
+}
+
+public class GoogleWarmupSettings
+{
+    public int MinSearches { get; set; } = 1;
+    public int MaxSearches { get; set; } = 3;
+    public double ContinueProbability { get; set; } = 0.5;
+    public int MaxBacktracks { get; set; } = 2;
+    public string[] Domains { get; set; } = new[] { "https://www.google.com", "https://www.google.com.vn" };
 }

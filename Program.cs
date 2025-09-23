@@ -1,8 +1,8 @@
-using GPM_driver.Behaviors;
 using GPM_driver.Helpers;
 using GPM_driver.Models;
 using GPM_driver.Services;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 
 class Program
@@ -27,6 +27,20 @@ class Program
             throw new InvalidOperationException("Proxy API URL is not configured.");
         }
 
+        using var loggerFactory = LoggerFactory.Create(builder =>
+        {
+            builder
+                .SetMinimumLevel(LogLevel.Information)
+                .AddSimpleConsole(options =>
+                {
+                    options.TimestampFormat = "HH:mm:ss ";
+                    options.SingleLine = true;
+                });
+        });
+
+        var logger = loggerFactory.CreateLogger<Program>();
+        logger.LogInformation("Starting GPM driver with profile template '{ProfileName}'.", settings.Gpm.Profile.ProfileName);
+
         using var gpm = new GPM_API(settings.Gpm.BaseUrl);
 
         int apiRetries = Math.Max(1, settings.Gpm.ApiRetryAttempts);
@@ -43,16 +57,15 @@ class Program
 
         try
         {
-            // 1) Fetch rotating proxy with retries
+            logger.LogInformation("Fetching rotating proxy from {ProxyEndpoint}.", settings.Gpm.ProxyApiUrl);
             ProxyXoayResponse proxy = await RetryHelper.ExecuteWithRetryAsync(
                 () => gpm.FetchRotatingProxyAsync(settings.Gpm.ProxyApiUrl),
                 maxAttempts: apiRetries,
                 initialDelay: initialDelay,
                 maxDelay: maxDelay,
                 operationName: "ProxyFetch");
-            Console.WriteLine($"HTTP: {proxy.proxyhttp}\nSOCKS5: {proxy.proxysocks5}\nMessage: {proxy.message}");
+            logger.LogInformation("Proxy obtained. HTTP={HttpProxy} SOCKS5={SocksProxy} Message={Message}.", proxy.proxyhttp, proxy.proxysocks5, proxy.message);
 
-            // 2) Create profile with fetched proxy
             var profileTemplate = settings.Gpm.Profile;
             var osOptions = profileTemplate.OperatingSystems?.Length > 0
                 ? profileTemplate.OperatingSystems
@@ -80,6 +93,7 @@ class Program
                 WebrtcMode = profileTemplate.WebrtcMode
             };
 
+            logger.LogInformation("Creating profile '{ProfileName}' using OS '{SelectedOs}'.", profileRequest.ProfileName, selectedOs);
             CreateProfileResponse createResp = await RetryHelper.ExecuteWithRetryAsync(
                 () => gpm.CreateProfileAsync(profileRequest),
                 maxAttempts: apiRetries,
@@ -89,16 +103,14 @@ class Program
 
             profileId = createResp?.data?.id;
             string? browserVersion = createResp?.data?.browser_version;
-            Console.WriteLine($"Created profile id: {profileId}");
-            Console.WriteLine($"Browser version: {browserVersion}");
+            logger.LogInformation("Profile created with id {ProfileId} and browser version {BrowserVersion}.", profileId, browserVersion ?? "unknown");
 
             if (string.IsNullOrEmpty(profileId))
             {
-                Console.WriteLine("Failed to create profile or id missing.");
+                logger.LogError("Failed to create profile or id missing. Aborting execution.");
                 return;
             }
 
-            // 3) Start profile
             startResponse = await RetryHelper.ExecuteWithRetryAsync(
                 () => gpm.StartProfileAsync(profileId),
                 maxAttempts: apiRetries,
@@ -108,100 +120,27 @@ class Program
 
             if (startResponse?.data == null)
             {
-                Console.WriteLine("Failed to start profile; start response data was null.");
+                logger.LogError("Failed to start profile; start response data was null.");
                 return;
             }
 
-            Console.WriteLine($"Driver path: {startResponse.data.driver_path}");
-            Console.WriteLine($"Remote debug address: {startResponse.data.remote_debugging_address}");
+            logger.LogInformation("Profile started. Driver path={DriverPath}, remote debugging={RemoteDebugging}.", startResponse.data.driver_path, startResponse.data.remote_debugging_address);
 
-            // 4) Connect Playwright to remote debugging
             using var playwright = await Playwright.CreateAsync();
-            var browser = await PlaywrightHelper.ConnectWithRetryAsync(playwright, startResponse.data.remote_debugging_address);
+            var browser = await PlaywrightHelper.ConnectWithRetryAsync(
+                playwright,
+                startResponse.data.remote_debugging_address,
+                logger: loggerFactory.CreateLogger("PlaywrightConnection"));
             var context = browser.Contexts.Count > 0 ? browser.Contexts[0] : await browser.NewContextAsync();
-            var pages = context.Pages;
-            var page = pages.Count > 0 ? pages[0] : await context.NewPageAsync();
+            logger.LogInformation("Attached to remote browser. Context currently has {PageCount} page(s).", context.Pages?.Count ?? 0);
 
-            //5) Use IpHeyService
-            try
-            {
-                var ipHeyService = new IpHeyService(page);
-                IpHeyResult ipHeyResult = await ipHeyService.CheckAsync();
-                Console.WriteLine($"Status: {ipHeyResult.Status}");
-                Console.WriteLine($"Browser: {ipHeyResult.Browser}");
-                Console.WriteLine($"Location: {ipHeyResult.Location}");
-                Console.WriteLine($"IP: {ipHeyResult.Ip}");
-                Console.WriteLine($"Hardware: {ipHeyResult.Hardware}");
-                Console.WriteLine($"Software: {ipHeyResult.Software}");
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[IpHey] Failed to complete check: {ex.Message}");
-            }
-
-            //6) Use IpFighterService
-            try
-            {
-                var ipFighter = new IpFighterService(page);
-                IpFighterResult result = await ipFighter.CheckIpAsync();
-                Console.WriteLine($"ISP: {result.Isp}");
-                Console.WriteLine($"Blacklist: {result.Blacklist}");
-                Console.WriteLine($"Proxy: {result.Proxy}");
-                Console.WriteLine($"WebRTC: {result.WebRTC}");
-                Console.WriteLine($"Score: {result.Score}");
-                Console.WriteLine($"City: {result.City}");
-                Console.WriteLine($"Country: {result.Country}");
-                Console.WriteLine($"Hostname: {result.Hostname}");
-                Console.WriteLine($"DNS: {result.DNS}");
-                Console.WriteLine($"Blacklist Details: {result.BlacklistDetails}");
-                Console.WriteLine($"Blacklist Servers: {result.BlacklistServers}");
-            }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[IpFighter] Failed to complete check: {ex.Message}");
-            }
-
-            // --- 7) Use SmartSearch ---
-            if (!string.IsNullOrWhiteSpace(settings.Search.SmartSearchKeywordDirectory))
-            {
-                try
-                {
-                    var smartSearch = new SmartSearchService(page, browser, settings.Search.SmartSearchKeywordDirectory);
-                    await smartSearch.SearchOneRandomKeywordAsync();
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[SmartSearch] Failed: {ex.Message}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("SmartSearch keyword directory not configured. Skipping SmartSearchService.");
-            }
-
-            // --- 8) Use GoogleSearchService ---
-            if (!string.IsNullOrWhiteSpace(settings.Search.GoogleKeywordDirectory))
-            {
-                try
-                {
-                    var googleSearch = new GoogleSearchService(context);
-                    var currentPage = await googleSearch.SearchOneRandomKeywordAsync(settings.Search.GoogleKeywordDirectory);
-                    var userBehavior = new UserBehavior(currentPage);
-                    await userBehavior.RunAsync();
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[GoogleSearch] Failed: {ex.Message}");
-                }
-            }
-            else
-            {
-                Console.WriteLine("Google keyword directory not configured. Skipping GoogleSearchService.");
-            }
+            var warmupLogger = loggerFactory.CreateLogger<WarmupSession>();
+            var warmup = new WarmupSession(settings, browser, context, warmupLogger, loggerFactory);
+            await warmup.RunAsync();
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Unhandled error: {ex.Message}\n{ex}");
+            logger.LogError(ex, "Unhandled error during orchestrator run.");
             Environment.ExitCode = -1;
         }
         finally
@@ -213,22 +152,22 @@ class Program
                     try
                     {
                         await gpm.StopProfileAsync(profileId);
-                        Console.WriteLine($"Stopped profile {profileId}.");
+                        logger.LogInformation("Stopped profile {ProfileId}.", profileId);
                     }
                     catch (Exception stopEx)
                     {
-                        Console.Error.WriteLine($"Failed to stop profile {profileId}: {stopEx.Message}");
+                        logger.LogWarning(stopEx, "Failed to stop profile {ProfileId}.", profileId);
                     }
                 }
 
                 try
                 {
                     await gpm.DeleteProfileAsync(profileId);
-                    Console.WriteLine($"Deleted profile {profileId}.");
+                    logger.LogInformation("Deleted profile {ProfileId}.", profileId);
                 }
                 catch (Exception deleteEx)
                 {
-                    Console.Error.WriteLine($"Failed to delete profile {profileId}: {deleteEx.Message}");
+                    logger.LogWarning(deleteEx, "Failed to delete profile {ProfileId}.", profileId);
                 }
             }
         }

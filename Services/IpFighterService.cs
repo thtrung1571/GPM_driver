@@ -6,16 +6,19 @@ using System.Threading.Tasks;
 using Microsoft.Playwright;
 using GPM_driver.Helpers;
 using GPM_driver.Models;
+using Microsoft.Extensions.Logging;
 
 namespace GPM_driver.Services
 {
     public class IpFighterService
     {
         private readonly IPage _page;
+        private readonly ILogger<IpFighterService>? _logger;
 
-        public IpFighterService(IPage page)
+        public IpFighterService(IPage page, ILogger<IpFighterService>? logger = null)
         {
             _page = page;
+            _logger = logger;
         }
 
         public async Task<IpFighterResult> CheckIpAsync()
@@ -87,7 +90,7 @@ namespace GPM_driver.Services
             }
         }
 
-        private static async Task<bool> TryClickAsync(ILocator locator)
+        private async Task<bool> TryClickAsync(ILocator locator)
         {
             try
             {
@@ -96,19 +99,21 @@ namespace GPM_driver.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[IpFighterService] Failed to click {await DescribeAsync(locator)}: {ex.Message}");
+                var description = await DescribeAsync(locator);
+                _logger?.LogWarning(ex, "IpFighter failed to click {LocatorDescription}", description);
                 return false;
             }
         }
 
-        private static async Task<string> DescribeAsync(ILocator locator)
+        private async Task<string> DescribeAsync(ILocator locator)
         {
             try
             {
                 return await locator.EvaluateAsync<string>("el => el.outerHTML") ?? locator.ToString();
             }
-            catch
+            catch (Exception ex)
             {
+                _logger?.LogDebug(ex, "Failed to describe locator; falling back to ToString().");
                 return locator.ToString();
             }
         }

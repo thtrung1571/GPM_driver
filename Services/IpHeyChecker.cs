@@ -6,16 +6,19 @@ using System.Threading.Tasks;
 using Microsoft.Playwright;
 using GPM_driver.Helpers;
 using GPM_driver.Models;
+using Microsoft.Extensions.Logging;
 
 namespace GPM_driver.Services
 {
     public class IpHeyService
     {
         private readonly IPage _page;
+        private readonly ILogger<IpHeyService>? _logger;
 
-        public IpHeyService(IPage page)
+        public IpHeyService(IPage page, ILogger<IpHeyService>? logger = null)
         {
             _page = page;
+            _logger = logger;
         }
 
         public async Task<IpHeyResult> CheckAsync()
@@ -47,7 +50,7 @@ namespace GPM_driver.Services
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[IpHeyService] Failed to read locator: {ex.Message}");
+                _logger?.LogWarning(ex, "IpHey locator read failed.");
                 return fallback;
             }
         }
