@@ -29,13 +29,27 @@ class Program
 
         using var gpm = new GPM_API(settings.Gpm.BaseUrl);
 
+        int apiRetries = Math.Max(1, settings.Gpm.ApiRetryAttempts);
+        var initialDelay = TimeSpan.FromMilliseconds(Math.Max(0, settings.Gpm.ApiRetryInitialDelayMs));
+        var configuredMaxDelayMs = Math.Max(0, settings.Gpm.ApiRetryMaxDelayMs);
+        var maxDelay = TimeSpan.FromMilliseconds(Math.Max(initialDelay.TotalMilliseconds, configuredMaxDelayMs));
+        if (maxDelay == TimeSpan.Zero)
+        {
+            maxDelay = TimeSpan.FromMilliseconds(1000);
+        }
+
         string? profileId = null;
         StartProfileResponse? startResponse = null;
 
         try
         {
-            // 1) Fetch rotating proxy
-            ProxyXoayResponse proxy = await gpm.FetchRotatingProxyAsync(settings.Gpm.ProxyApiUrl);
+            // 1) Fetch rotating proxy with retries
+            ProxyXoayResponse proxy = await RetryHelper.ExecuteWithRetryAsync(
+                () => gpm.FetchRotatingProxyAsync(settings.Gpm.ProxyApiUrl),
+                maxAttempts: apiRetries,
+                initialDelay: initialDelay,
+                maxDelay: maxDelay,
+                operationName: "ProxyFetch");
             Console.WriteLine($"HTTP: {proxy.proxyhttp}\nSOCKS5: {proxy.proxysocks5}\nMessage: {proxy.message}");
 
             // 2) Create profile with fetched proxy
@@ -43,7 +57,7 @@ class Program
             var osOptions = profileTemplate.OperatingSystems?.Length > 0
                 ? profileTemplate.OperatingSystems
                 : new[] { profileTemplate.Os };
-            var selectedOs = osOptions[Random.Shared.Next(osOptions.Length)];
+            var selectedOs = osOptions[RandomProvider.Next(0, osOptions.Length)];
 
             var profileRequest = new CreateProfileRequest
             {
@@ -66,7 +80,13 @@ class Program
                 WebrtcMode = profileTemplate.WebrtcMode
             };
 
-            CreateProfileResponse createResp = await gpm.CreateProfileAsync(profileRequest);
+            CreateProfileResponse createResp = await RetryHelper.ExecuteWithRetryAsync(
+                () => gpm.CreateProfileAsync(profileRequest),
+                maxAttempts: apiRetries,
+                initialDelay: initialDelay,
+                maxDelay: maxDelay,
+                operationName: "CreateProfile");
+
             profileId = createResp?.data?.id;
             string? browserVersion = createResp?.data?.browser_version;
             Console.WriteLine($"Created profile id: {profileId}");
@@ -79,47 +99,80 @@ class Program
             }
 
             // 3) Start profile
-            startResponse = await gpm.StartProfileAsync(profileId);
+            startResponse = await RetryHelper.ExecuteWithRetryAsync(
+                () => gpm.StartProfileAsync(profileId),
+                maxAttempts: apiRetries,
+                initialDelay: initialDelay,
+                maxDelay: maxDelay,
+                operationName: "StartProfile");
+
+            if (startResponse?.data == null)
+            {
+                Console.WriteLine("Failed to start profile; start response data was null.");
+                return;
+            }
+
             Console.WriteLine($"Driver path: {startResponse.data.driver_path}");
             Console.WriteLine($"Remote debug address: {startResponse.data.remote_debugging_address}");
 
             // 4) Connect Playwright to remote debugging
             using var playwright = await Playwright.CreateAsync();
             var browser = await PlaywrightHelper.ConnectWithRetryAsync(playwright, startResponse.data.remote_debugging_address);
-            var context = browser.Contexts[0];
+            var context = browser.Contexts.Count > 0 ? browser.Contexts[0] : await browser.NewContextAsync();
             var pages = context.Pages;
             var page = pages.Count > 0 ? pages[0] : await context.NewPageAsync();
 
             //5) Use IpHeyService
-            var ipHeyService = new IpHeyService(page);
-            IpHeyResult ipHeyResult = await ipHeyService.CheckAsync();
-            Console.WriteLine($"Status: {ipHeyResult.Status}");
-            Console.WriteLine($"Browser: {ipHeyResult.Browser}");
-            Console.WriteLine($"Location: {ipHeyResult.Location}");
-            Console.WriteLine($"IP: {ipHeyResult.Ip}");
-            Console.WriteLine($"Hardware: {ipHeyResult.Hardware}");
-            Console.WriteLine($"Software: {ipHeyResult.Software}");
+            try
+            {
+                var ipHeyService = new IpHeyService(page);
+                IpHeyResult ipHeyResult = await ipHeyService.CheckAsync();
+                Console.WriteLine($"Status: {ipHeyResult.Status}");
+                Console.WriteLine($"Browser: {ipHeyResult.Browser}");
+                Console.WriteLine($"Location: {ipHeyResult.Location}");
+                Console.WriteLine($"IP: {ipHeyResult.Ip}");
+                Console.WriteLine($"Hardware: {ipHeyResult.Hardware}");
+                Console.WriteLine($"Software: {ipHeyResult.Software}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[IpHey] Failed to complete check: {ex.Message}");
+            }
 
             //6) Use IpFighterService
-            var ipFighter = new IpFighterService(page);
-            IpFighterResult result = await ipFighter.CheckIpAsync();
-            Console.WriteLine($"ISP: {result.Isp}");
-            Console.WriteLine($"Blacklist: {result.Blacklist}");
-            Console.WriteLine($"Proxy: {result.Proxy}");
-            Console.WriteLine($"WebRTC: {result.WebRTC}");
-            Console.WriteLine($"Score: {result.Score}");
-            Console.WriteLine($"City: {result.City}");
-            Console.WriteLine($"Country: {result.Country}");
-            Console.WriteLine($"Hostname: {result.Hostname}");
-            Console.WriteLine($"DNS: {result.DNS}");
-            Console.WriteLine($"Blacklist Details: {result.BlacklistDetails}");
-            Console.WriteLine($"Blacklist Servers: {result.BlacklistServers}");
+            try
+            {
+                var ipFighter = new IpFighterService(page);
+                IpFighterResult result = await ipFighter.CheckIpAsync();
+                Console.WriteLine($"ISP: {result.Isp}");
+                Console.WriteLine($"Blacklist: {result.Blacklist}");
+                Console.WriteLine($"Proxy: {result.Proxy}");
+                Console.WriteLine($"WebRTC: {result.WebRTC}");
+                Console.WriteLine($"Score: {result.Score}");
+                Console.WriteLine($"City: {result.City}");
+                Console.WriteLine($"Country: {result.Country}");
+                Console.WriteLine($"Hostname: {result.Hostname}");
+                Console.WriteLine($"DNS: {result.DNS}");
+                Console.WriteLine($"Blacklist Details: {result.BlacklistDetails}");
+                Console.WriteLine($"Blacklist Servers: {result.BlacklistServers}");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[IpFighter] Failed to complete check: {ex.Message}");
+            }
 
             // --- 7) Use SmartSearch ---
             if (!string.IsNullOrWhiteSpace(settings.Search.SmartSearchKeywordDirectory))
             {
-                var smartSearch = new SmartSearchService(page, browser, settings.Search.SmartSearchKeywordDirectory);
-                await smartSearch.SearchOneRandomKeywordAsync();
+                try
+                {
+                    var smartSearch = new SmartSearchService(page, browser, settings.Search.SmartSearchKeywordDirectory);
+                    await smartSearch.SearchOneRandomKeywordAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[SmartSearch] Failed: {ex.Message}");
+                }
             }
             else
             {
@@ -129,10 +182,17 @@ class Program
             // --- 8) Use GoogleSearchService ---
             if (!string.IsNullOrWhiteSpace(settings.Search.GoogleKeywordDirectory))
             {
-                var googleSearch = new GoogleSearchService(context);
-                var currentPage = await googleSearch.SearchOneRandomKeywordAsync(settings.Search.GoogleKeywordDirectory);
-                var userBehavior = new UserBehavior(currentPage);
-                await userBehavior.RunAsync();
+                try
+                {
+                    var googleSearch = new GoogleSearchService(context);
+                    var currentPage = await googleSearch.SearchOneRandomKeywordAsync(settings.Search.GoogleKeywordDirectory);
+                    var userBehavior = new UserBehavior(currentPage);
+                    await userBehavior.RunAsync();
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[GoogleSearch] Failed: {ex.Message}");
+                }
             }
             else
             {
@@ -142,7 +202,7 @@ class Program
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Unhandled error: {ex.Message}\n{ex}");
-            throw;
+            Environment.ExitCode = -1;
         }
         finally
         {

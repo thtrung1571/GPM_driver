@@ -18,7 +18,7 @@ namespace GPM_driver.Behaviors
         public UserBehavior(IPage page)
         {
             _page = page;
-            _rng = new Random(Guid.NewGuid().GetHashCode());
+            _rng = RandomProvider.Shared;
         }
 
         /// <summary>

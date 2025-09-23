@@ -20,8 +20,8 @@ namespace GPM_driver.Helpers
         public MouseHelper(IPage page)
         {
             _page = page;
-            // Stronger entropy than default Random()
-            _random = new Random(Guid.NewGuid().GetHashCode());
+            // Use shared RNG to avoid identical seeds across helpers
+            _random = RandomProvider.Shared;
         }
 
         /// <summary>

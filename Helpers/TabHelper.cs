@@ -11,7 +11,7 @@ namespace GPM_driver.Helpers
     /// </summary>
     internal static class TabHelper
     {
-        private static readonly Random _random = new Random(Guid.NewGuid().GetHashCode());
+        private static readonly Random _random = RandomProvider.Shared;
 
         /// <summary>
         /// ClickExplorer-specific behavior for exploring new tabs

@@ -13,7 +13,7 @@ namespace GPM_driver.Behaviors.Actions
         public ClickBehavior(MouseHelper mouseHelper)
         {
             _mouseHelper = mouseHelper ?? throw new ArgumentNullException(nameof(mouseHelper));
-            _random = new Random(Guid.NewGuid().GetHashCode());
+            _random = RandomProvider.Shared;
         }
 
         public async Task SafeRandomLinkClickAsync(IPage page)

@@ -13,7 +13,7 @@ namespace GPM_driver.Services
         private IPage _page;
         private MouseHelper _mouseHelper;
         private KeyboardHelper _keyboardHelper;
-        private readonly Random _random = new Random();
+        private readonly Random _random = RandomProvider.Shared;
 
         public GoogleSearchService(IBrowserContext context)
         {

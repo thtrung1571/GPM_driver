@@ -11,7 +11,6 @@ namespace GPM_driver.Helpers
     {
         public static async Task<IBrowser> ConnectWithRetryAsync(IPlaywright playwright, string remoteAddress, int maxRetries = 5)
         {
-            var random = new Random();
             for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
                 try
@@ -26,7 +25,7 @@ namespace GPM_driver.Helpers
                     Console.WriteLine($"[Playwright] Failed: {ex.Message}");
                     if (attempt == maxRetries) throw;
 
-                    int wait = random.Next(1500, 4000); // jitter wait
+                    int wait = RandomProvider.Next(1500, 4000); // jitter wait
                     Console.WriteLine($"Retrying in {wait} ms...");
                     await Task.Delay(wait);
                 }

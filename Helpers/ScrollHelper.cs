@@ -6,7 +6,7 @@ namespace GPM_driver.Helpers
 {
     internal static class ScrollHelper
     {
-        private static readonly Random _random = new Random(Guid.NewGuid().GetHashCode());
+        private static readonly Random _random = RandomProvider.Shared;
 
         public static async Task ScrollRandomAsync(IPage page, int scrolls = 5, bool allowUpward = true)
         {

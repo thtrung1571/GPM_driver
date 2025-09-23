@@ -10,6 +10,9 @@ public class GpmSettings
 {
     public string BaseUrl { get; set; } = string.Empty;
     public string ProxyApiUrl { get; set; } = string.Empty;
+    public int ApiRetryAttempts { get; set; } = 3;
+    public int ApiRetryInitialDelayMs { get; set; } = 500;
+    public int ApiRetryMaxDelayMs { get; set; } = 8000;
     public ProfileTemplate Profile { get; set; } = new();
 }
 

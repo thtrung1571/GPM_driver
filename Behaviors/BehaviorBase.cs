@@ -11,7 +11,7 @@ namespace GPM_driver.Behaviors
     /// </summary>
     internal static class BehaviorBase
     {
-        private static readonly Random _random = new Random(Guid.NewGuid().GetHashCode());
+        private static readonly Random _random = RandomProvider.Shared;
 
         /// <summary>
         /// Performs a random content inspection behavior (text selection, hover over elements, etc.)

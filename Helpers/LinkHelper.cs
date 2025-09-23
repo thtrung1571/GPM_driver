@@ -8,7 +8,7 @@ namespace GPM_driver.Helpers
 {
     internal static class LinkHelper
     {
-        private static readonly Random _random = new Random(Guid.NewGuid().GetHashCode());
+        private static readonly Random _random = RandomProvider.Shared;
 
         /// <summary>
         /// Safely picks a random visible internal link and clicks it.
