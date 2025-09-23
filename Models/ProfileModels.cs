@@ -7,6 +7,38 @@ using System.Text.Json.Serialization;
 
 namespace GPM_driver.Models
 {
+    public class CreateProfileRequest
+    {
+        [JsonPropertyName("profile_name")] public string ProfileName { get; set; } = string.Empty;
+        [JsonPropertyName("browser_core")] public string BrowserCore { get; set; } = "chromium";
+        [JsonPropertyName("browser_name")] public string BrowserName { get; set; } = "Chrome";
+        [JsonPropertyName("browser_version")] public string? BrowserVersion { get; set; }
+            = null;
+        [JsonPropertyName("is_random_browser_version")] public bool IsRandomBrowserVersion { get; set; }
+            = false;
+        [JsonPropertyName("raw_proxy")] public string RawProxy { get; set; } = string.Empty;
+        [JsonPropertyName("startup_urls")] public string StartupUrls { get; set; } = string.Empty;
+        [JsonPropertyName("is_masked_font")] public bool IsMaskedFont { get; set; }
+            = true;
+        [JsonPropertyName("is_noise_canvas")] public bool IsNoiseCanvas { get; set; }
+            = true;
+        [JsonPropertyName("is_noise_webgl")] public bool IsNoiseWebgl { get; set; }
+            = false;
+        [JsonPropertyName("is_noise_client_rect")] public bool IsNoiseClientRect { get; set; }
+            = true;
+        [JsonPropertyName("is_noise_audio_context")] public bool IsNoiseAudioContext { get; set; }
+            = true;
+        [JsonPropertyName("is_random_screen")] public bool IsRandomScreen { get; set; }
+            = true;
+        [JsonPropertyName("is_masked_webgl_data")] public bool IsMaskedWebglData { get; set; }
+            = true;
+        [JsonPropertyName("is_masked_media_device")] public bool IsMaskedMediaDevice { get; set; }
+            = true;
+        [JsonPropertyName("is_random_os")] public bool IsRandomOs { get; set; } = false;
+        [JsonPropertyName("os")] public string Os { get; set; } = "Windows 10";
+        [JsonPropertyName("webrtc_mode")] public int WebrtcMode { get; set; } = 2;
+    }
+
     public class CreateProfileData
     {
         [JsonPropertyName("id")] public string id { get; set; }

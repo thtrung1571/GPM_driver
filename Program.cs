@@ -1,117 +1,176 @@
-﻿using GPM_driver.Models;
-using GPM_driver.Services;
-using Microsoft.Playwright;
-using System;
-using System.Threading.Tasks;
-using GPM_driver.Helpers;
 using GPM_driver.Behaviors;
+using GPM_driver.Helpers;
+using GPM_driver.Models;
+using GPM_driver.Services;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Playwright;
 
 class Program
 {
-
     static async Task Main()
     {
-        string gpmBase = "http://127.0.0.1:19995";
-        string proxyUrl = "https://proxyxoay.shop/api/get.php?key=BnQqcrAVCtRAauUjUUXyXe&&nhamang=random&&tinhthanh=0";
+        var configuration = new ConfigurationBuilder()
+            .SetBasePath(AppContext.BaseDirectory)
+            .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+            .AddEnvironmentVariables()
+            .Build();
 
-        using var gpm = new GPM_API(gpmBase);
+        var settings = configuration.Get<AppSettings>() ?? throw new InvalidOperationException("Configuration could not be loaded.");
 
-
-        // 1) Fetch rotating proxy
-        ProxyXoayResponse proxy = await gpm.FetchRotatingProxyAsync(proxyUrl);
-        Console.WriteLine($"HTTP: {proxy.proxyhttp}\nSOCKS5: {proxy.proxysocks5}\nMessage: {proxy.message}");
-
-        // 2) Create profile with fetched proxy
-        var random1 = new Random();
-        var osVersions = new[] { "Windows 10", "Windows 11" };
-        var selectedOs = osVersions[random1.Next(osVersions.Length)];
-        var profilePayload = new
+        if (string.IsNullOrWhiteSpace(settings.Gpm.BaseUrl))
         {
-            profile_name = "Test profile",
-            browser_core = "chromium",
-            browser_name = "Chrome",
-            //browser_version = "139.0.7258.139",
-            is_random_browser_version = false,
-            raw_proxy = proxy.proxyhttp,   // inject fetched proxy
-            startup_urls = "",
-            is_masked_font = true,
-            is_noise_canvas = true,
-            is_noise_webgl = false,
-            is_noise_client_rect = true,
-            is_noise_audio_context = true,
-            is_random_screen = true,
-            is_masked_webgl_data = true,
-            is_masked_media_device = true,
-            is_random_os = false,
-            os = "Windows 10",
-            webrtc_mode = 2
-        };
-
-        CreateProfileResponse createResp = await gpm.CreateProfileAsync(profilePayload);
-        string profileId = createResp?.data?.id;
-        string browser_version = createResp?.data?.browser_version;
-        Console.WriteLine($"Created profile id: {profileId}");
-        Console.WriteLine($"Browser version: {browser_version}");
-
-        if (string.IsNullOrEmpty(profileId))
-        {
-            Console.WriteLine("Failed to create profile or id missing.");
-            return;
+            throw new InvalidOperationException("GPM base URL is not configured.");
         }
 
-        // 3) Start profile
-        StartProfileResponse startResp = await gpm.StartProfileAsync(profileId);
-        Console.WriteLine($"Driver path: {startResp.data.driver_path}");
-        Console.WriteLine($"Remote debug address: {startResp.data.remote_debugging_address}");
+        if (string.IsNullOrWhiteSpace(settings.Gpm.ProxyApiUrl))
+        {
+            throw new InvalidOperationException("Proxy API URL is not configured.");
+        }
 
-        // 4) Connect Playwright to remote debugging
-        using var playwright = await Playwright.CreateAsync();
-        var random = new Random();
-        var delayMilliseconds = random.Next(1500, 3001); // 5000ms to 10000ms (5-10 seconds)
-        //var browser = await playwright.Chromium.ConnectOverCDPAsync($"http://{startResp.data.remote_debugging_address}");
-        var browser = await PlaywrightHelper.ConnectWithRetryAsync(playwright, startResp.data.remote_debugging_address);
-        var context = browser.Contexts[0];
-        // Get the first available page instead of creating a new one
-        var pages = context.Pages;
-        var page = pages.Count > 0 ? pages[0] : await context.NewPageAsync();
-        //5) Use IpHeyService
-        var ipHeyService = new IpHeyService(page);
-        IpHeyResult ipHeyResult = await ipHeyService.CheckAsync();
-        Console.WriteLine($"Status: {ipHeyResult.Status}");
-        Console.WriteLine($"Browser: {ipHeyResult.Browser}");
-        Console.WriteLine($"Location: {ipHeyResult.Location}");
-        Console.WriteLine($"IP: {ipHeyResult.Ip}");
-        Console.WriteLine($"Hardware: {ipHeyResult.Hardware}");
-        Console.WriteLine($"Software: {ipHeyResult.Software}");
+        using var gpm = new GPM_API(settings.Gpm.BaseUrl);
 
-        //6) Use IpFighterService
-        var ipFighter = new IpFighterService(page);
-        IpFighterResult result = await ipFighter.CheckIpAsync();
-        Console.WriteLine($"ISP: {result.Isp}");
-        Console.WriteLine($"Blacklist: {result.Blacklist}");
-        Console.WriteLine($"Proxy: {result.Proxy}");
-        Console.WriteLine($"WebRTC: {result.WebRTC}");
-        Console.WriteLine($"Score: {result.Score}");
-        Console.WriteLine($"City: {result.City}");
-        Console.WriteLine($"Country: {result.Country}");
-        Console.WriteLine($"Hostname: {result.Hostname}");
-        Console.WriteLine($"DNS: {result.DNS}");
-        Console.WriteLine($"Blacklist Details: {result.BlacklistDetails}");
-        Console.WriteLine($"Blacklist Servers: {result.BlacklistServers}");
-        // --- 7) Use SmartSearch ---
-        var keywordFolder1 = @"E:\Google_Farm\google"; // path to your keyword text files
-        var smartSearch = new SmartSearchService(page, browser, keywordFolder1);
+        string? profileId = null;
+        StartProfileResponse? startResponse = null;
 
-        // Start searching all keywords
-        await smartSearch.SearchOneRandomKeywordAsync();
-        // --- 7) Use GoogleSearchService ---
-        var googleSearch = new GoogleSearchService(context);
-        //var keywordFolder = @"E:\Google_Farm\google"; // path to your keyword text files
-        var currentPage = await googleSearch.SearchOneRandomKeywordAsync(@"E:\Google_Farm\Keyword_Search\");
-        // 8) Choice of result on result page google - use the page after navigation
-        var userBehavior = new GPM_driver.Behaviors.UserBehavior(currentPage);
-        await userBehavior.RunAsync();
+        try
+        {
+            // 1) Fetch rotating proxy
+            ProxyXoayResponse proxy = await gpm.FetchRotatingProxyAsync(settings.Gpm.ProxyApiUrl);
+            Console.WriteLine($"HTTP: {proxy.proxyhttp}\nSOCKS5: {proxy.proxysocks5}\nMessage: {proxy.message}");
 
+            // 2) Create profile with fetched proxy
+            var profileTemplate = settings.Gpm.Profile;
+            var osOptions = profileTemplate.OperatingSystems?.Length > 0
+                ? profileTemplate.OperatingSystems
+                : new[] { profileTemplate.Os };
+            var selectedOs = osOptions[Random.Shared.Next(osOptions.Length)];
+
+            var profileRequest = new CreateProfileRequest
+            {
+                ProfileName = profileTemplate.ProfileName,
+                BrowserCore = profileTemplate.BrowserCore,
+                BrowserName = profileTemplate.BrowserName,
+                IsRandomBrowserVersion = profileTemplate.IsRandomBrowserVersion,
+                RawProxy = proxy.proxyhttp,
+                StartupUrls = profileTemplate.StartupUrls,
+                IsMaskedFont = profileTemplate.IsMaskedFont,
+                IsNoiseCanvas = profileTemplate.IsNoiseCanvas,
+                IsNoiseWebgl = profileTemplate.IsNoiseWebgl,
+                IsNoiseClientRect = profileTemplate.IsNoiseClientRect,
+                IsNoiseAudioContext = profileTemplate.IsNoiseAudioContext,
+                IsRandomScreen = profileTemplate.IsRandomScreen,
+                IsMaskedWebglData = profileTemplate.IsMaskedWebglData,
+                IsMaskedMediaDevice = profileTemplate.IsMaskedMediaDevice,
+                IsRandomOs = profileTemplate.IsRandomOs,
+                Os = selectedOs,
+                WebrtcMode = profileTemplate.WebrtcMode
+            };
+
+            CreateProfileResponse createResp = await gpm.CreateProfileAsync(profileRequest);
+            profileId = createResp?.data?.id;
+            string? browserVersion = createResp?.data?.browser_version;
+            Console.WriteLine($"Created profile id: {profileId}");
+            Console.WriteLine($"Browser version: {browserVersion}");
+
+            if (string.IsNullOrEmpty(profileId))
+            {
+                Console.WriteLine("Failed to create profile or id missing.");
+                return;
+            }
+
+            // 3) Start profile
+            startResponse = await gpm.StartProfileAsync(profileId);
+            Console.WriteLine($"Driver path: {startResponse.data.driver_path}");
+            Console.WriteLine($"Remote debug address: {startResponse.data.remote_debugging_address}");
+
+            // 4) Connect Playwright to remote debugging
+            using var playwright = await Playwright.CreateAsync();
+            var browser = await PlaywrightHelper.ConnectWithRetryAsync(playwright, startResponse.data.remote_debugging_address);
+            var context = browser.Contexts[0];
+            var pages = context.Pages;
+            var page = pages.Count > 0 ? pages[0] : await context.NewPageAsync();
+
+            //5) Use IpHeyService
+            var ipHeyService = new IpHeyService(page);
+            IpHeyResult ipHeyResult = await ipHeyService.CheckAsync();
+            Console.WriteLine($"Status: {ipHeyResult.Status}");
+            Console.WriteLine($"Browser: {ipHeyResult.Browser}");
+            Console.WriteLine($"Location: {ipHeyResult.Location}");
+            Console.WriteLine($"IP: {ipHeyResult.Ip}");
+            Console.WriteLine($"Hardware: {ipHeyResult.Hardware}");
+            Console.WriteLine($"Software: {ipHeyResult.Software}");
+
+            //6) Use IpFighterService
+            var ipFighter = new IpFighterService(page);
+            IpFighterResult result = await ipFighter.CheckIpAsync();
+            Console.WriteLine($"ISP: {result.Isp}");
+            Console.WriteLine($"Blacklist: {result.Blacklist}");
+            Console.WriteLine($"Proxy: {result.Proxy}");
+            Console.WriteLine($"WebRTC: {result.WebRTC}");
+            Console.WriteLine($"Score: {result.Score}");
+            Console.WriteLine($"City: {result.City}");
+            Console.WriteLine($"Country: {result.Country}");
+            Console.WriteLine($"Hostname: {result.Hostname}");
+            Console.WriteLine($"DNS: {result.DNS}");
+            Console.WriteLine($"Blacklist Details: {result.BlacklistDetails}");
+            Console.WriteLine($"Blacklist Servers: {result.BlacklistServers}");
+
+            // --- 7) Use SmartSearch ---
+            if (!string.IsNullOrWhiteSpace(settings.Search.SmartSearchKeywordDirectory))
+            {
+                var smartSearch = new SmartSearchService(page, browser, settings.Search.SmartSearchKeywordDirectory);
+                await smartSearch.SearchOneRandomKeywordAsync();
+            }
+            else
+            {
+                Console.WriteLine("SmartSearch keyword directory not configured. Skipping SmartSearchService.");
+            }
+
+            // --- 8) Use GoogleSearchService ---
+            if (!string.IsNullOrWhiteSpace(settings.Search.GoogleKeywordDirectory))
+            {
+                var googleSearch = new GoogleSearchService(context);
+                var currentPage = await googleSearch.SearchOneRandomKeywordAsync(settings.Search.GoogleKeywordDirectory);
+                var userBehavior = new UserBehavior(currentPage);
+                await userBehavior.RunAsync();
+            }
+            else
+            {
+                Console.WriteLine("Google keyword directory not configured. Skipping GoogleSearchService.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Unhandled error: {ex.Message}\n{ex}");
+            throw;
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(profileId))
+            {
+                if (startResponse?.data?.profile_id != null)
+                {
+                    try
+                    {
+                        await gpm.StopProfileAsync(profileId);
+                        Console.WriteLine($"Stopped profile {profileId}.");
+                    }
+                    catch (Exception stopEx)
+                    {
+                        Console.Error.WriteLine($"Failed to stop profile {profileId}: {stopEx.Message}");
+                    }
+                }
+
+                try
+                {
+                    await gpm.DeleteProfileAsync(profileId);
+                    Console.WriteLine($"Deleted profile {profileId}.");
+                }
+                catch (Exception deleteEx)
+                {
+                    Console.Error.WriteLine($"Failed to delete profile {profileId}: {deleteEx.Message}");
+                }
+            }
+        }
     }
 }
-
