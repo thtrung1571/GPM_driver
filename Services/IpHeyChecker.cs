@@ -41,7 +41,7 @@ namespace GPM_driver.Services
             };
         }
 
-        private static async Task<string> TryInnerTextAsync(ILocator locator, string fallback = "")
+        private async Task<string> TryInnerTextAsync(ILocator locator, string fallback = "")
         {
             try
             {

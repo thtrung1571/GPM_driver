@@ -352,7 +352,7 @@ namespace GPM_driver.Services
             bool isFocused = false;
             try
             {
-                isFocused = await input.IsFocusedAsync();
+                isFocused = await input.EvaluateAsync<bool>("el => document.activeElement === el");
             }
             catch
             {
