@@ -39,6 +39,7 @@ internal class WarmupSession
         await RunIpChecksAsync(page);
         await RunSmartSearchAsync(page);
         await RunGoogleWarmupAsync();
+        await RunYouTubeWarmupAsync();
     }
 
     private async Task<IPage> EnsurePrimaryPageAsync()
@@ -166,6 +167,35 @@ internal class WarmupSession
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Google warmup failed.");
+        }
+    }
+
+    private async Task RunYouTubeWarmupAsync()
+    {
+        var warmupConfig = _settings.Search.YouTubeWarmup;
+        if (warmupConfig == null || !warmupConfig.Enabled)
+        {
+            _logger.LogInformation("YouTube warmup disabled or not configured. Skipping.");
+            return;
+        }
+
+        var keywordDirectory = _settings.Search.YouTubeKeywordDirectory;
+        if (!string.IsNullOrWhiteSpace(keywordDirectory) && !Directory.Exists(keywordDirectory))
+        {
+            _logger.LogWarning("YouTube keyword directory '{Directory}' does not exist. Falling back to built-in keywords.", keywordDirectory);
+            keywordDirectory = null;
+        }
+
+        var ytLogger = _loggerFactory.CreateLogger<YouTubeWarmupService>();
+        var youtubeWarmup = new YouTubeWarmupService(_context, ytLogger);
+
+        try
+        {
+            await youtubeWarmup.RunWarmupAsync(keywordDirectory, warmupConfig);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "YouTube warmup failed.");
         }
     }
 }

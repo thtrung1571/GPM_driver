@@ -44,6 +44,8 @@ public class SearchSettings
     public string SmartSearchKeywordDirectory { get; set; } = string.Empty;
     public string GoogleKeywordDirectory { get; set; } = string.Empty;
     public GoogleWarmupSettings GoogleWarmup { get; set; } = new();
+    public string YouTubeKeywordDirectory { get; set; } = string.Empty;
+    public YouTubeWarmupSettings YouTubeWarmup { get; set; } = new();
 }
 
 public class GoogleWarmupSettings
@@ -53,4 +55,21 @@ public class GoogleWarmupSettings
     public double ContinueProbability { get; set; } = 0.5;
     public int MaxBacktracks { get; set; } = 2;
     public string[] Domains { get; set; } = new[] { "https://www.google.com", "https://www.google.com.vn" };
+}
+
+public class YouTubeWarmupSettings
+{
+    public bool Enabled { get; set; } = true;
+    public int MinInteractions { get; set; } = 2;
+    public int MaxInteractions { get; set; } = 5;
+    public double ContinueProbability { get; set; } = 0.35;
+    public int MinWatchMilliseconds { get; set; } = 20000;
+    public int MaxWatchMilliseconds { get; set; } = 55000;
+    public int MinShortWatchMilliseconds { get; set; } = 8000;
+    public int MaxShortWatchMilliseconds { get; set; } = 20000;
+    public double SearchWeight { get; set; } = 0.5;
+    public double ShortsWeight { get; set; } = 0.25;
+    public int MinDelayBetweenActionsMs { get; set; } = 2000;
+    public int MaxDelayBetweenActionsMs { get; set; } = 5000;
+    public string[] Domains { get; set; } = new[] { "https://www.youtube.com", "https://www.youtube.com/feed/explore" };
 }
