@@ -80,4 +80,11 @@ public class YouTubeWarmupSettings
     public double AutoplayFollowProbability { get; set; } = 0.35;
     public int MinShortSequenceLength { get; set; } = 2;
     public int MaxShortSequenceLength { get; set; } = 5;
+    public string Persona { get; set; } = "Generalist";
+    public string Region { get; set; } = "Global";
+    public string Language { get; set; } = "en-US";
+    public string? Timezone { get; set; }
+        = null;
+    public string[] Behaviors { get; set; }
+        = new[] { "Search", "Home", "Shorts", "Recommendations" };
 }

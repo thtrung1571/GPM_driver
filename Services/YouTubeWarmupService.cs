@@ -23,8 +23,19 @@ internal class YouTubeWarmupService
     private KeyboardHelper? _keyboardHelper;
     private bool _isFirstRun = true;
 
-    private IdentityProfile? _identityProfile;
-    private List<string>? _identityKeywords;
+    private YouTubeIdentityDocument? _identityDocument;
+    private readonly List<string> _identityKeywords = new();
+    private string _identityKey = "default";
+    private string? _identityDirectory;
+    private string? _sessionsDirectory;
+    private string? _identityPath;
+
+    private readonly List<SessionInteraction> _sessionInteractions = new();
+    private readonly Dictionary<string, int> _sessionSourceCounts = new(StringComparer.OrdinalIgnoreCase);
+    private string _sessionId = string.Empty;
+    private DateTimeOffset _sessionStart;
+    private long _sessionTotalWatchTimeMs;
+    private int _sessionBounceCount;
 
     private static readonly string[] FallbackKeywords =
     {
@@ -36,18 +47,104 @@ internal class YouTubeWarmupService
         "gaming highlights"
     };
 
-    private sealed class IdentityProfile
+    private sealed class YouTubeIdentityDocument
     {
-        public string IdentityKey { get; set; } = string.Empty;
-        public List<string> Keywords { get; set; } = new();
+        public IdentityProfileInfo Profile { get; set; } = new();
+        public KeywordSection Keywords { get; set; } = new();
+        public IdentityStats Stats { get; set; } = new();
         public List<string> SourceFiles { get; set; } = new();
+    }
+
+    private sealed class IdentityProfileInfo
+    {
+        public string ProfileId { get; set; } = string.Empty;
+        public string Persona { get; set; } = "Generalist";
+        public string Region { get; set; } = "Global";
+        public string Language { get; set; } = "en-US";
+        public string Domain { get; set; } = "https://www.youtube.com";
+        public string Timezone { get; set; } = TimeZoneInfo.Utc.Id;
         public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
+        public string[] Behaviors { get; set; } = Array.Empty<string>();
+    }
+
+    private sealed class KeywordSection
+    {
+        public List<string> SeedList { get; set; } = new();
+        public List<KeywordUsageRecord> UsedHistory { get; set; } = new();
+        public List<KeywordVideoRecord> KeywordHistory { get; set; } = new();
+    }
+
+    private sealed class KeywordUsageRecord
+    {
+        public string Keyword { get; set; } = string.Empty;
+        public int TimesUsed { get; set; }
+            = 0;
+        public DateTimeOffset? LastUsed { get; set; }
+            = null;
+    }
+
+    private sealed class KeywordVideoRecord
+    {
+        public string Keyword { get; set; } = string.Empty;
+        public string VideoUrl { get; set; } = string.Empty;
+        public int WatchedMs { get; set; }
+            = 0;
+        public DateTimeOffset WatchedAt { get; set; } = DateTimeOffset.UtcNow;
+    }
+
+    private sealed class IdentityStats
+    {
+        public int TotalSessions { get; set; }
+            = 0;
+        public int TotalVideosWatched { get; set; }
+            = 0;
+        public long TotalWatchTimeMs { get; set; }
+            = 0;
+        public double AvgWatchDurationMs { get; set; }
+            = 0;
+        public double BounceRate { get; set; }
+            = 0;
+        public double DeepSessionRate { get; set; }
+            = 0;
+        public int BounceVideos { get; set; }
+            = 0;
+        public int DeepSessions { get; set; }
+            = 0;
+        public DateTimeOffset? LastSessionTimestamp { get; set; }
+            = null;
+        public DateTimeOffset? LastWatchedAt { get; set; }
+            = null;
+        public SourceBreakdown SourceDistribution { get; set; } = new();
+        public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
+    }
+
+    private sealed class SourceBreakdown
+    {
+        public int SearchCount { get; set; }
+            = 0;
+        public int HomeCount { get; set; }
+            = 0;
+        public int ShortsCount { get; set; }
+            = 0;
+        public double SearchPercent { get; set; }
+            = 0;
+        public double HomePercent { get; set; }
+            = 0;
+        public double ShortsPercent { get; set; }
+            = 0;
     }
 
     private sealed class VideoWatchResult
     {
         public string Context { get; set; } = string.Empty;
+        public string ContextDetail { get; set; } = string.Empty;
+        public string EntryPoint { get; set; } = string.Empty;
         public string Method { get; set; } = string.Empty;
+        public int? ResultPosition { get; set; }
+            = null;
+        public string? Keyword { get; set; }
+            = null;
         public string? Url { get; set; }
             = string.Empty;
         public string? Title { get; set; }
@@ -62,6 +159,77 @@ internal class YouTubeWarmupService
             = DateTimeOffset.UtcNow;
         public bool IsShort { get; set; }
             = false;
+        public string? ParentVideoUrl { get; set; }
+            = null;
+        public string? ParentVideoTitle { get; set; }
+            = null;
+        public string? ParentContext { get; set; }
+            = null;
+    }
+
+    private sealed class SessionInteraction
+    {
+        public string Context { get; set; } = string.Empty;
+        public string ContextDetail { get; set; } = string.Empty;
+        public string EntryPoint { get; set; } = string.Empty;
+        public string Method { get; set; } = string.Empty;
+        public int? ResultPosition { get; set; }
+            = null;
+        public string? Keyword { get; set; }
+            = null;
+        public string? VideoUrl { get; set; }
+            = string.Empty;
+        public string? Title { get; set; }
+            = string.Empty;
+        public string? ChannelName { get; set; }
+            = string.Empty;
+        public int PlannedWatchMs { get; set; }
+            = 0;
+        public int ActualWatchMs { get; set; }
+            = 0;
+        public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+        public bool IsShort { get; set; }
+            = false;
+        public string? ParentVideo { get; set; }
+            = null;
+        public string? ParentVideoTitle { get; set; }
+            = null;
+        public string? ParentContext { get; set; }
+            = null;
+    }
+
+    private sealed class SessionLog
+    {
+        public string SessionId { get; set; } = string.Empty;
+        public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+        public DateTimeOffset EndedAt { get; set; } = DateTimeOffset.UtcNow;
+        public List<SessionInteraction> Interactions { get; set; } = new();
+        public SessionSummary Summary { get; set; } = new();
+    }
+
+    private sealed class SessionSummary
+    {
+        public int VideosWatched { get; set; }
+            = 0;
+        public long TotalWatchTimeMs { get; set; }
+            = 0;
+        public double AverageWatchTimeMs { get; set; }
+            = 0;
+        public int BounceCount { get; set; }
+            = 0;
+        public bool DeepChain { get; set; }
+            = false;
+        public SessionSourceBreakdown Sources { get; set; } = new();
+    }
+
+    private sealed class SessionSourceBreakdown
+    {
+        public int Search { get; set; }
+            = 0;
+        public int Home { get; set; }
+            = 0;
+        public int Shorts { get; set; }
+            = 0;
     }
 
     public YouTubeWarmupService(IBrowserContext context, ILogger<YouTubeWarmupService>? logger = null)
@@ -103,46 +271,54 @@ internal class YouTubeWarmupService
             warmup.MinShortWatchMilliseconds = Math.Min(8000, warmup.MaxShortWatchMilliseconds);
         }
 
-        await EnsureIdentityKeywordsAsync(keywordDirectory, warmup, profileKey);
+        await EnsureIdentityAsync(keywordDirectory, warmup, profileKey);
+        BeginSession();
 
-        int completed = 0;
-        while (true)
+        try
         {
-            try
+            int completed = 0;
+            while (true)
             {
-                await EnsureOnYouTubeAsync(warmup);
-                await PerformInteractionAsync(keywordDirectory, warmup);
-            }
-            catch (Exception ex)
-            {
-                _logger?.LogWarning(ex, "YouTube interaction failed.");
-            }
+                try
+                {
+                    await EnsureOnYouTubeAsync(warmup);
+                    await PerformInteractionAsync(keywordDirectory, warmup);
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogWarning(ex, "YouTube interaction failed.");
+                }
 
-            _isFirstRun = false;
-            completed++;
+                _isFirstRun = false;
+                completed++;
 
-            if (completed >= warmup.MaxInteractions)
-            {
-                _logger?.LogInformation("Reached max YouTube interactions ({Count}). Ending warmup.", completed);
-                break;
-            }
+                if (completed >= warmup.MaxInteractions)
+                {
+                    _logger?.LogInformation("Reached max YouTube interactions ({Count}). Ending warmup.", completed);
+                    break;
+                }
 
-            if (completed < warmup.MinInteractions)
-            {
-                _logger?.LogInformation("Completed {Count} YouTube interactions but minimum is {Minimum}. Continuing.", completed, warmup.MinInteractions);
+                if (completed < warmup.MinInteractions)
+                {
+                    _logger?.LogInformation("Completed {Count} YouTube interactions but minimum is {Minimum}. Continuing.", completed, warmup.MinInteractions);
+                    await PauseBetweenActionsAsync(warmup);
+                    continue;
+                }
+
+                double roll = _random.NextDouble();
+                if (roll >= warmup.ContinueProbability)
+                {
+                    _logger?.LogInformation("Stopping YouTube warmup after {Count} interactions (roll={Roll:0.00} threshold={Threshold:0.00}).", completed, roll, warmup.ContinueProbability);
+                    break;
+                }
+
+                _logger?.LogInformation("Continuing YouTube warmup after {Count} interactions (roll={Roll:0.00}).", completed, roll);
                 await PauseBetweenActionsAsync(warmup);
-                continue;
             }
-
-            double roll = _random.NextDouble();
-            if (roll >= warmup.ContinueProbability)
-            {
-                _logger?.LogInformation("Stopping YouTube warmup after {Count} interactions (roll={Roll:0.00} threshold={Threshold:0.00}).", completed, roll, warmup.ContinueProbability);
-                break;
-            }
-
-            _logger?.LogInformation("Continuing YouTube warmup after {Count} interactions (roll={Roll:0.00}).", completed, roll);
-            await PauseBetweenActionsAsync(warmup);
+        }
+        finally
+        {
+            await FinalizeSessionAsync();
         }
     }
 
@@ -203,6 +379,7 @@ internal class YouTubeWarmupService
         {
             string domain = ChooseDomain(warmup);
             _logger?.LogInformation("Navigating to YouTube domain {Domain} (current={Url}).", domain, url ?? "unknown");
+            SetActiveDomain(domain);
             await page.GotoAsync(domain, new PageGotoOptions
             {
                 Timeout = 60000,
@@ -210,6 +387,19 @@ internal class YouTubeWarmupService
             });
             await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
             await Task.Delay(_random.Next(1000, 2500));
+        }
+        else if (!string.IsNullOrWhiteSpace(url))
+        {
+            try
+            {
+                var uri = new Uri(url);
+                string baseDomain = $"{uri.Scheme}://{uri.Host}";
+                SetActiveDomain(baseDomain);
+            }
+            catch
+            {
+                // ignore parse failures
+            }
         }
     }
 
@@ -219,9 +409,10 @@ internal class YouTubeWarmupService
         await EnsureOnYouTubeAsync(warmup);
 
         string keyword = await PickKeywordAsync(keywordDirectory);
+        RegisterKeywordUsage(keyword);
         _logger?.LogInformation(
             "YouTube identity {Identity} searching for keyword '{Keyword}'.",
-            _identityProfile?.IdentityKey ?? "default",
+            _identityKey,
             keyword);
 
         var input = await FocusSearchBoxAsync();
@@ -269,7 +460,15 @@ internal class YouTubeWarmupService
         await _mouseHelper!.MoveAndClickAsync(target);
 
         await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-        var result = await WatchVideoAsync(warmup, "Search", "SearchResult");
+        var result = await WatchVideoAsync(
+            warmup,
+            context: "Search",
+            method: "SearchResult",
+            contextDetail: $"SearchResult#{index + 1}",
+            entryPoint: "Search",
+            keyword: keyword,
+            position: index + 1,
+            parent: null);
         if (result != null)
         {
             await MaybeChainRecommendedVideosAsync(warmup, result);
@@ -296,7 +495,15 @@ internal class YouTubeWarmupService
         await ScrollHelper.ScrollToElementAsync(page, target);
         await _mouseHelper!.MoveAndClickAsync(target);
         await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-        var result = await WatchVideoAsync(warmup, "Home", "HomeRecommendation");
+        var result = await WatchVideoAsync(
+            warmup,
+            context: "Home",
+            method: "HomeRecommendation",
+            contextDetail: $"HomeRecommendation#{index + 1}",
+            entryPoint: "Home",
+            keyword: null,
+            position: index + 1,
+            parent: null);
         if (result != null)
         {
             await MaybeChainRecommendedVideosAsync(warmup, result);
@@ -352,13 +559,28 @@ internal class YouTubeWarmupService
         int maxSequence = Math.Max(minSequence, warmup.MaxShortSequenceLength);
         int sequenceCount = _random.Next(minSequence, maxSequence + 1);
 
+        VideoWatchResult? previous = null;
         for (int i = 0; i < sequenceCount; i++)
         {
-            var result = await WatchShortAsync(warmup, i == 0 ? "Shorts" : "ShortsContinuation", i == 0 ? "InitialShort" : "NextShort");
+            string context = i == 0 ? "Shorts" : "ShortsContinuation";
+            string method = i == 0 ? "InitialShort" : "NextShort";
+            string detail = $"Shorts#{i + 1}";
+            string entryPoint = previous?.EntryPoint ?? "Shorts";
+
+            var result = await WatchShortAsync(
+                warmup,
+                context,
+                method,
+                detail,
+                entryPoint,
+                position: i + 1,
+                parent: previous);
             if (result == null)
             {
                 break;
             }
+
+            previous = result;
 
             if (i < sequenceCount - 1)
             {
@@ -401,7 +623,15 @@ internal class YouTubeWarmupService
         return false;
     }
 
-    private async Task<VideoWatchResult?> WatchVideoAsync(YouTubeWarmupSettings warmup, string context, string method)
+    private async Task<VideoWatchResult?> WatchVideoAsync(
+        YouTubeWarmupSettings warmup,
+        string context,
+        string method,
+        string contextDetail,
+        string entryPoint,
+        string? keyword,
+        int? position,
+        VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
         try
@@ -446,21 +676,35 @@ internal class YouTubeWarmupService
         var result = new VideoWatchResult
         {
             Context = context,
+            ContextDetail = contextDetail,
+            EntryPoint = string.IsNullOrWhiteSpace(entryPoint) ? context : entryPoint,
             Method = method,
+            ResultPosition = position,
+            Keyword = keyword,
             Url = page.Url,
             Title = await TryGetInnerTextAsync(page.Locator("h1 yt-formatted-string")),
             ChannelName = await TryGetInnerTextAsync(page.Locator("#channel-name a, #owner-name a")),
             PlannedWatchDurationMs = planned,
             ActualWatchDurationMs = (int)stopwatch.Elapsed.TotalMilliseconds,
             StartedAt = start,
-            IsShort = false
+            IsShort = false,
+            ParentVideoUrl = parent?.Url,
+            ParentVideoTitle = parent?.Title,
+            ParentContext = parent?.ContextDetail ?? parent?.Context
         };
 
-        LogVideoWatch(result);
+        RecordVideoWatch(result);
         return result;
     }
 
-    private async Task<VideoWatchResult?> WatchShortAsync(YouTubeWarmupSettings warmup, string context, string method)
+    private async Task<VideoWatchResult?> WatchShortAsync(
+        YouTubeWarmupSettings warmup,
+        string context,
+        string method,
+        string contextDetail,
+        string entryPoint,
+        int? position,
+        VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
         int planned = PlanWatchDuration(warmup.MinShortWatchMilliseconds, warmup.MaxShortWatchMilliseconds);
@@ -481,34 +725,24 @@ internal class YouTubeWarmupService
         var result = new VideoWatchResult
         {
             Context = context,
+            ContextDetail = contextDetail,
+            EntryPoint = string.IsNullOrWhiteSpace(entryPoint) ? context : entryPoint,
             Method = method,
+            ResultPosition = position,
             Url = page.Url,
             Title = await TryGetInnerTextAsync(page.Locator("#description h1, #info-contents h2, #shorts-player h1")),
             ChannelName = await TryGetInnerTextAsync(page.Locator("#channel-name a, #owner-container a")),
             PlannedWatchDurationMs = planned,
             ActualWatchDurationMs = (int)stopwatch.Elapsed.TotalMilliseconds,
             StartedAt = start,
-            IsShort = true
+            IsShort = true,
+            ParentVideoUrl = parent?.Url,
+            ParentVideoTitle = parent?.Title,
+            ParentContext = parent?.ContextDetail ?? parent?.Context
         };
 
-        LogVideoWatch(result);
+        RecordVideoWatch(result);
         return result;
-    }
-
-    private void LogVideoWatch(VideoWatchResult result)
-    {
-        _logger?.LogInformation(
-            "YouTube watch context={Context} method={Method} url={Url} title={Title} channel={Channel} planned_ms={Planned} actual_ms={Actual} started={Started:o} short={IsShort} identity={Identity}.",
-            result.Context,
-            result.Method,
-            result.Url ?? "unknown",
-            string.IsNullOrWhiteSpace(result.Title) ? "(unknown)" : result.Title,
-            string.IsNullOrWhiteSpace(result.ChannelName) ? "(unknown)" : result.ChannelName,
-            result.PlannedWatchDurationMs,
-            result.ActualWatchDurationMs,
-            result.StartedAt,
-            result.IsShort,
-            _identityProfile?.IdentityKey ?? "default");
     }
 
     private async Task MaybeChainRecommendedVideosAsync(YouTubeWarmupSettings warmup, VideoWatchResult initialResult)
@@ -529,22 +763,34 @@ internal class YouTubeWarmupService
         int chainCount = _random.Next(minChain, maxChain + 1);
 
         var page = await EnsurePageAsync();
+        var parent = initialResult;
         for (int i = 0; i < chainCount; i++)
         {
             string previousUrl = page.Url;
             bool useAutoplay = i == 0 && _random.NextDouble() < Math.Clamp(warmup.AutoplayFollowProbability, 0, 1);
             bool navigated;
             string method;
+            string contextDetail;
+            int? position = null;
 
             if (useAutoplay)
             {
                 navigated = await TriggerAutoplayAsync(page);
                 method = "Autoplay";
+                contextDetail = "AutoplayNext";
             }
             else
             {
-                navigated = await OpenRecommendedSidebarVideoAsync(page);
+                int? selection = await OpenRecommendedSidebarVideoAsync(page);
+                navigated = selection.HasValue;
                 method = "ManualSidebar";
+                if (!navigated)
+                {
+                    break;
+                }
+
+                position = selection!.Value + 1;
+                contextDetail = $"Sidebar#{position}";
             }
 
             if (!navigated)
@@ -569,11 +815,21 @@ internal class YouTubeWarmupService
                 break;
             }
 
-            var result = await WatchVideoAsync(warmup, "Recommendation", method);
+            var result = await WatchVideoAsync(
+                warmup,
+                context: "Recommendation",
+                method: method,
+                contextDetail: contextDetail,
+                entryPoint: parent.EntryPoint,
+                keyword: null,
+                position: position,
+                parent: parent);
             if (result == null)
             {
                 break;
             }
+
+            parent = result;
         }
     }
 
@@ -608,7 +864,7 @@ internal class YouTubeWarmupService
         }
     }
 
-    private async Task<bool> OpenRecommendedSidebarVideoAsync(IPage page)
+    private async Task<int?> OpenRecommendedSidebarVideoAsync(IPage page)
     {
         try
         {
@@ -616,7 +872,7 @@ internal class YouTubeWarmupService
             int count = await recTiles.CountAsync();
             if (count == 0)
             {
-                return false;
+                return null;
             }
 
             int selectionCount = Math.Min(count, 6);
@@ -624,12 +880,12 @@ internal class YouTubeWarmupService
             var target = recTiles.Nth(index);
             await ScrollHelper.ScrollToElementAsync(page, target);
             await _mouseHelper!.MoveAndClickAsync(target);
-            return true;
+            return index;
         }
         catch (Exception ex)
         {
             _logger?.LogDebug(ex, "Failed to open recommended video from sidebar.");
-            return false;
+            return null;
         }
     }
 
@@ -687,6 +943,7 @@ internal class YouTubeWarmupService
     {
         var page = await EnsurePageAsync();
         string domain = ChooseDomain(warmup);
+        SetActiveDomain(domain);
         if (!page.Url.StartsWith(domain, StringComparison.OrdinalIgnoreCase))
         {
             _logger?.LogInformation("Navigating to YouTube home domain {Domain}.", domain);
@@ -760,10 +1017,37 @@ internal class YouTubeWarmupService
         }
     }
 
+
     private async Task<string> PickKeywordAsync(string? keywordDirectory)
     {
-        if (_identityKeywords != null && _identityKeywords.Count > 0)
+        if (_identityKeywords.Count > 0)
         {
+            if (_identityDocument?.Keywords != null)
+            {
+                var usageLookup = (_identityDocument.Keywords.UsedHistory ?? new List<KeywordUsageRecord>())
+                    .GroupBy(record => record.Keyword, StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.OrderByDescending(r => r.LastUsed ?? DateTimeOffset.MinValue).First())
+                    .ToDictionary(record => record.Keyword, record => record, StringComparer.OrdinalIgnoreCase);
+
+                var ranked = _identityKeywords
+                    .Select(keyword =>
+                    {
+                        usageLookup.TryGetValue(keyword, out var record);
+                        int usage = record?.TimesUsed ?? 0;
+                        DateTimeOffset lastUsed = record?.LastUsed ?? DateTimeOffset.MinValue;
+                        return new { keyword, usage, lastUsed };
+                    })
+                    .OrderBy(item => item.usage)
+                    .ThenBy(item => item.lastUsed)
+                    .ThenBy(_ => _random.NextDouble())
+                    .FirstOrDefault();
+
+                if (ranked != null)
+                {
+                    return ranked.keyword;
+                }
+            }
+
             return _identityKeywords[_random.Next(_identityKeywords.Count)];
         }
 
@@ -795,72 +1079,181 @@ internal class YouTubeWarmupService
         return FallbackKeywords[_random.Next(FallbackKeywords.Length)];
     }
 
-    private async Task EnsureIdentityKeywordsAsync(string? keywordDirectory, YouTubeWarmupSettings warmup, string? profileKey)
+    private async Task EnsureIdentityAsync(string? keywordDirectory, YouTubeWarmupSettings warmup, string? profileKey)
     {
-        if (_identityKeywords != null && _identityKeywords.Count > 0)
+        if (_identityDocument != null && _identityKeywords.Count > 0)
         {
             return;
         }
 
-        string identityKey = string.IsNullOrWhiteSpace(profileKey) ? "default" : profileKey;
+        _identityKey = string.IsNullOrWhiteSpace(profileKey) ? "default" : profileKey;
         string baseDirectory = string.IsNullOrWhiteSpace(warmup.IdentityCacheDirectory)
             ? Path.Combine(AppContext.BaseDirectory, "youtube-identities")
             : Path.GetFullPath(warmup.IdentityCacheDirectory);
 
         Directory.CreateDirectory(baseDirectory);
-        string fileName = SanitizeFileName(identityKey) + ".json";
-        string identityPath = Path.Combine(baseDirectory, fileName);
+        string safeKey = SanitizeFileName(_identityKey);
+        _identityDirectory = Path.Combine(baseDirectory, safeKey);
+        Directory.CreateDirectory(_identityDirectory);
+        _sessionsDirectory = Path.Combine(_identityDirectory, "sessions");
+        Directory.CreateDirectory(_sessionsDirectory);
+        _identityPath = Path.Combine(_identityDirectory, "identity.json");
 
-        if (File.Exists(identityPath))
+        YouTubeIdentityDocument? document = null;
+        if (File.Exists(_identityPath))
         {
             try
             {
-                var existing = JsonSerializer.Deserialize<IdentityProfile>(await File.ReadAllTextAsync(identityPath));
-                if (existing != null && existing.Keywords.Count > 0)
-                {
-                    _identityProfile = existing;
-                    _identityKeywords = existing.Keywords;
-                    _logger?.LogInformation(
-                        "Loaded YouTube identity {Identity} with {KeywordCount} keywords from {Path}.",
-                        existing.IdentityKey,
-                        existing.Keywords.Count,
-                        identityPath);
-                    return;
-                }
+                document = JsonSerializer.Deserialize<YouTubeIdentityDocument>(await File.ReadAllTextAsync(_identityPath));
             }
             catch (Exception ex)
             {
-                _logger?.LogWarning(ex, "Failed to read YouTube identity file {Path}. Rebuilding.", identityPath);
+                _logger?.LogWarning(ex, "Failed to read YouTube identity document from {Path}. Rebuilding.", _identityPath);
             }
         }
 
-        var profile = await BuildIdentityProfileAsync(identityKey, keywordDirectory, warmup);
-        _identityProfile = profile;
-        _identityKeywords = profile.Keywords;
-
-        try
+        bool updated = false;
+        if (document == null)
         {
-            var options = new JsonSerializerOptions { WriteIndented = true };
-            await File.WriteAllTextAsync(identityPath, JsonSerializer.Serialize(profile, options));
+            document = await CreateNewIdentityDocumentAsync(keywordDirectory, warmup);
+            updated = true;
             _logger?.LogInformation(
                 "Created YouTube identity {Identity} with {KeywordCount} keywords (sources={Sources}).",
-                profile.IdentityKey,
-                profile.Keywords.Count,
-                profile.SourceFiles.Count == 0 ? "fallback" : string.Join(",", profile.SourceFiles));
+                _identityKey,
+                document.Keywords.SeedList.Count,
+                document.SourceFiles.Count == 0 ? "fallback" : string.Join(",", document.SourceFiles));
         }
-        catch (Exception ex)
+
+        document.Profile ??= new IdentityProfileInfo();
+        if (!string.Equals(document.Profile.ProfileId, _identityKey, StringComparison.Ordinal))
         {
-            _logger?.LogWarning(ex, "Failed to persist YouTube identity profile to {Path}.", identityPath);
+            document.Profile.ProfileId = _identityKey;
+            updated = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(document.Profile.Persona) && !string.IsNullOrWhiteSpace(warmup.Persona))
+        {
+            document.Profile.Persona = warmup.Persona;
+            updated = true;
+        }
+        if (string.IsNullOrWhiteSpace(document.Profile.Region) && !string.IsNullOrWhiteSpace(warmup.Region))
+        {
+            document.Profile.Region = warmup.Region;
+            updated = true;
+        }
+        if (string.IsNullOrWhiteSpace(document.Profile.Language) && !string.IsNullOrWhiteSpace(warmup.Language))
+        {
+            document.Profile.Language = warmup.Language;
+            updated = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(document.Profile.Domain) && warmup.Domains?.Length > 0)
+        {
+            document.Profile.Domain = warmup.Domains[0];
+            updated = true;
+        }
+
+        string configuredTimezone = warmup.Timezone ?? TimeZoneInfo.Local.Id;
+        if (string.IsNullOrWhiteSpace(document.Profile.Timezone) || !string.Equals(document.Profile.Timezone, configuredTimezone, StringComparison.Ordinal))
+        {
+            document.Profile.Timezone = configuredTimezone;
+            updated = true;
+        }
+
+        if (warmup.Behaviors != null && warmup.Behaviors.Length > 0 && (document.Profile.Behaviors == null || document.Profile.Behaviors.Length == 0))
+        {
+            document.Profile.Behaviors = warmup.Behaviors;
+            updated = true;
+        }
+
+        document.Keywords ??= new KeywordSection();
+        document.Keywords.SeedList ??= new List<string>();
+        document.Keywords.UsedHistory ??= new List<KeywordUsageRecord>();
+        document.Keywords.KeywordHistory ??= new List<KeywordVideoRecord>();
+
+        if (document.Keywords.SeedList.Count == 0)
+        {
+            var (keywords, sources) = await BuildIdentityKeywordsAsync(keywordDirectory, warmup);
+            if (keywords.Count == 0)
+            {
+                keywords.AddRange(FallbackKeywords);
+            }
+
+            document.Keywords.SeedList = keywords;
+            document.SourceFiles = sources;
+            updated = true;
+        }
+
+        document.SourceFiles ??= new List<string>();
+        document.Stats ??= new IdentityStats();
+        document.Stats.SourceDistribution ??= new SourceBreakdown();
+
+        _identityDocument = document;
+        _identityKeywords.Clear();
+        _identityKeywords.AddRange(document.Keywords.SeedList);
+
+        if (_identityKeywords.Count == 0)
+        {
+            _identityKeywords.AddRange(FallbackKeywords);
+            document.Keywords.SeedList.AddRange(FallbackKeywords);
+            updated = true;
+        }
+
+        if (updated)
+        {
+            await SaveIdentityAsync();
         }
     }
 
-    private async Task<IdentityProfile> BuildIdentityProfileAsync(string identityKey, string? keywordDirectory, YouTubeWarmupSettings warmup)
+    private async Task<YouTubeIdentityDocument> CreateNewIdentityDocumentAsync(string? keywordDirectory, YouTubeWarmupSettings warmup)
     {
-        var profile = new IdentityProfile
+        var (keywords, sources) = await BuildIdentityKeywordsAsync(keywordDirectory, warmup);
+        if (keywords.Count == 0)
         {
-            IdentityKey = identityKey,
-            CreatedAt = DateTimeOffset.UtcNow
+            keywords.AddRange(FallbackKeywords);
+        }
+
+        var distinctKeywords = keywords
+            .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
+            .Select(keyword => keyword.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var profile = new IdentityProfileInfo
+        {
+            ProfileId = _identityKey,
+            Persona = string.IsNullOrWhiteSpace(warmup.Persona) ? "Generalist" : warmup.Persona,
+            Region = string.IsNullOrWhiteSpace(warmup.Region) ? "Global" : warmup.Region,
+            Language = string.IsNullOrWhiteSpace(warmup.Language) ? "en-US" : warmup.Language,
+            Domain = warmup.Domains?.FirstOrDefault() ?? "https://www.youtube.com",
+            Timezone = warmup.Timezone ?? TimeZoneInfo.Local.Id,
+            CreatedAt = DateTimeOffset.UtcNow,
+            LastUpdated = DateTimeOffset.UtcNow,
+            Behaviors = warmup.Behaviors ?? Array.Empty<string>()
         };
+
+        return new YouTubeIdentityDocument
+        {
+            Profile = profile,
+            Keywords = new KeywordSection
+            {
+                SeedList = distinctKeywords,
+                UsedHistory = new List<KeywordUsageRecord>(),
+                KeywordHistory = new List<KeywordVideoRecord>()
+            },
+            Stats = new IdentityStats
+            {
+                LastUpdated = DateTimeOffset.UtcNow,
+                SourceDistribution = new SourceBreakdown()
+            },
+            SourceFiles = sources
+        };
+    }
+
+    private async Task<(List<string> Keywords, List<string> Sources)> BuildIdentityKeywordsAsync(string? keywordDirectory, YouTubeWarmupSettings warmup)
+    {
+        var keywords = new List<string>();
+        var sources = new List<string>();
 
         if (!string.IsNullOrWhiteSpace(keywordDirectory) && Directory.Exists(keywordDirectory))
         {
@@ -874,15 +1267,15 @@ internal class YouTubeWarmupService
 
                     foreach (var file in selected)
                     {
-                        var keywords = (await File.ReadAllLinesAsync(file))
+                        var fileKeywords = (await File.ReadAllLinesAsync(file))
                             .Select(line => line.Trim())
                             .Where(line => !string.IsNullOrWhiteSpace(line))
                             .ToArray();
 
-                        if (keywords.Length > 0)
+                        if (fileKeywords.Length > 0)
                         {
-                            profile.Keywords.AddRange(keywords);
-                            profile.SourceFiles.Add(Path.GetFileName(file));
+                            keywords.AddRange(fileKeywords);
+                            sources.Add(Path.GetFileName(file));
                         }
                     }
                 }
@@ -893,27 +1286,289 @@ internal class YouTubeWarmupService
             }
         }
 
-        if (profile.Keywords.Count == 0)
+        if (keywords.Count > 0)
         {
-            profile.Keywords.AddRange(FallbackKeywords);
-        }
-        else
-        {
-            profile.Keywords = profile.Keywords
+            keywords = keywords
                 .Where(keyword => !string.IsNullOrWhiteSpace(keyword))
                 .Select(keyword => keyword.Trim())
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
         }
 
-        return profile;
+        return (keywords, sources);
     }
 
-    private static string SanitizeFileName(string identityKey)
+    private void RegisterKeywordUsage(string keyword)
     {
-        var invalid = Path.GetInvalidFileNameChars();
-        var sanitized = new string(identityKey.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray());
-        return string.IsNullOrWhiteSpace(sanitized) ? "identity" : sanitized;
+        if (_identityDocument?.Keywords == null)
+        {
+            return;
+        }
+
+        var usage = _identityDocument.Keywords.UsedHistory
+            .FirstOrDefault(record => string.Equals(record.Keyword, keyword, StringComparison.OrdinalIgnoreCase));
+        if (usage == null)
+        {
+            usage = new KeywordUsageRecord
+            {
+                Keyword = keyword,
+                TimesUsed = 1,
+                LastUsed = DateTimeOffset.UtcNow
+            };
+            _identityDocument.Keywords.UsedHistory.Add(usage);
+        }
+        else
+        {
+            usage.TimesUsed++;
+            usage.LastUsed = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void UpdateKeywordHistory(VideoWatchResult result)
+    {
+        if (_identityDocument?.Keywords == null || string.IsNullOrWhiteSpace(result.Keyword) || string.IsNullOrWhiteSpace(result.Url))
+        {
+            return;
+        }
+
+        var history = _identityDocument.Keywords.KeywordHistory;
+        var existing = history.FirstOrDefault(item =>
+            string.Equals(item.Keyword, result.Keyword, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(item.VideoUrl, result.Url, StringComparison.OrdinalIgnoreCase));
+
+        if (existing == null)
+        {
+            history.Add(new KeywordVideoRecord
+            {
+                Keyword = result.Keyword!,
+                VideoUrl = result.Url!,
+                WatchedMs = result.ActualWatchDurationMs,
+                WatchedAt = result.StartedAt
+            });
+        }
+        else
+        {
+            existing.WatchedMs = result.ActualWatchDurationMs;
+            existing.WatchedAt = result.StartedAt;
+        }
+
+        const int maxHistory = 200;
+        if (history.Count > maxHistory)
+        {
+            int remove = history.Count - maxHistory;
+            history.RemoveRange(0, Math.Min(remove, history.Count));
+        }
+    }
+
+    private void RecordVideoWatch(VideoWatchResult result)
+    {
+        string? rawTitle = string.IsNullOrWhiteSpace(result.Title) ? null : result.Title;
+        string? rawChannel = string.IsNullOrWhiteSpace(result.ChannelName) ? null : result.ChannelName;
+        string title = rawTitle ?? "(unknown)";
+        string channel = rawChannel ?? "(unknown)";
+
+        _logger?.LogInformation(
+            "YouTube watch identity={Identity} entry={Entry} context={Context} detail={Detail} method={Method} url={Url} title={Title} channel={Channel} planned_ms={Planned} actual_ms={Actual} started={Started:o} short={IsShort} parent={Parent}.",
+            _identityKey,
+            result.EntryPoint,
+            result.Context,
+            result.ContextDetail,
+            result.Method,
+            result.Url ?? "unknown",
+            title,
+            channel,
+            result.PlannedWatchDurationMs,
+            result.ActualWatchDurationMs,
+            result.StartedAt,
+            result.IsShort,
+            result.ParentVideoUrl ?? "none");
+
+        var interaction = new SessionInteraction
+        {
+            Context = result.Context,
+            ContextDetail = result.ContextDetail,
+            EntryPoint = string.IsNullOrWhiteSpace(result.EntryPoint) ? result.Context : result.EntryPoint,
+            Method = result.Method,
+            ResultPosition = result.ResultPosition,
+            Keyword = result.Keyword,
+            VideoUrl = result.Url,
+            Title = rawTitle,
+            ChannelName = rawChannel,
+            PlannedWatchMs = result.PlannedWatchDurationMs,
+            ActualWatchMs = result.ActualWatchDurationMs,
+            StartedAt = result.StartedAt,
+            IsShort = result.IsShort,
+            ParentVideo = result.ParentVideoUrl,
+            ParentVideoTitle = result.ParentVideoTitle,
+            ParentContext = result.ParentContext
+        };
+
+        _sessionInteractions.Add(interaction);
+        _sessionTotalWatchTimeMs += result.ActualWatchDurationMs;
+
+        if (IsBounce(result))
+        {
+            _sessionBounceCount++;
+        }
+
+        string entryPoint = interaction.EntryPoint;
+        if (!_sessionSourceCounts.ContainsKey(entryPoint))
+        {
+            _sessionSourceCounts[entryPoint] = 0;
+        }
+        _sessionSourceCounts[entryPoint]++;
+
+        UpdateKeywordHistory(result);
+    }
+
+    private void BeginSession()
+    {
+        _sessionInteractions.Clear();
+        _sessionSourceCounts.Clear();
+        _sessionTotalWatchTimeMs = 0;
+        _sessionBounceCount = 0;
+        _sessionStart = DateTimeOffset.UtcNow;
+        _sessionId = Guid.NewGuid().ToString("N");
+    }
+
+    private async Task FinalizeSessionAsync()
+    {
+        if (_identityDocument == null)
+        {
+            return;
+        }
+
+        DateTimeOffset endedAt = DateTimeOffset.UtcNow;
+        var summary = new SessionSummary
+        {
+            VideosWatched = _sessionInteractions.Count,
+            TotalWatchTimeMs = _sessionTotalWatchTimeMs,
+            AverageWatchTimeMs = _sessionInteractions.Count > 0
+                ? (double)_sessionTotalWatchTimeMs / _sessionInteractions.Count
+                : 0,
+            BounceCount = _sessionBounceCount,
+            DeepChain = _sessionInteractions.Count >= 3,
+            Sources = new SessionSourceBreakdown
+            {
+                Search = _sessionSourceCounts.TryGetValue("Search", out var search) ? search : 0,
+                Home = _sessionSourceCounts.TryGetValue("Home", out var home) ? home : 0,
+                Shorts = _sessionSourceCounts.TryGetValue("Shorts", out var shorts) ? shorts : 0
+            }
+        };
+
+        if (!string.IsNullOrEmpty(_sessionsDirectory))
+        {
+            try
+            {
+                Directory.CreateDirectory(_sessionsDirectory);
+                var sessionLog = new SessionLog
+                {
+                    SessionId = _sessionId,
+                    StartedAt = _sessionStart,
+                    EndedAt = endedAt,
+                    Interactions = new List<SessionInteraction>(_sessionInteractions),
+                    Summary = summary
+                };
+
+                string fileName = $"{_sessionStart:yyyy-MM-ddTHH-mm-ss}.json";
+                string sessionPath = Path.Combine(_sessionsDirectory, fileName);
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                await File.WriteAllTextAsync(sessionPath, JsonSerializer.Serialize(sessionLog, options));
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to persist YouTube warmup session log for identity {Identity}.", _identityKey);
+            }
+        }
+
+        _logger?.LogInformation(
+            "YouTube warmup session {SessionId} summary: videos={Videos} total_ms={Total} avg_ms={Average:0} bounce={Bounce} deep_chain={Deep} sources(search={Search}, home={Home}, shorts={Shorts}).",
+            _sessionId,
+            summary.VideosWatched,
+            summary.TotalWatchTimeMs,
+            summary.AverageWatchTimeMs,
+            summary.BounceCount,
+            summary.DeepChain,
+            summary.Sources.Search,
+            summary.Sources.Home,
+            summary.Sources.Shorts);
+
+        var stats = _identityDocument.Stats ??= new IdentityStats();
+        stats.TotalSessions++;
+        stats.TotalVideosWatched += summary.VideosWatched;
+        stats.TotalWatchTimeMs += summary.TotalWatchTimeMs;
+        stats.LastSessionTimestamp = endedAt;
+        if (summary.VideosWatched > 0)
+        {
+            stats.LastWatchedAt = endedAt;
+        }
+
+        stats.AvgWatchDurationMs = stats.TotalVideosWatched > 0
+            ? (double)stats.TotalWatchTimeMs / stats.TotalVideosWatched
+            : 0;
+
+        stats.BounceVideos += summary.BounceCount;
+        stats.BounceRate = stats.TotalVideosWatched > 0
+            ? (double)stats.BounceVideos / stats.TotalVideosWatched * 100
+            : 0;
+
+        if (summary.DeepChain)
+        {
+            stats.DeepSessions++;
+        }
+        stats.DeepSessionRate = stats.TotalSessions > 0
+            ? (double)stats.DeepSessions / stats.TotalSessions * 100
+            : 0;
+
+        stats.SourceDistribution ??= new SourceBreakdown();
+        stats.SourceDistribution.SearchCount += summary.Sources.Search;
+        stats.SourceDistribution.HomeCount += summary.Sources.Home;
+        stats.SourceDistribution.ShortsCount += summary.Sources.Shorts;
+
+        int totalVideos = stats.TotalVideosWatched;
+        if (totalVideos > 0)
+        {
+            stats.SourceDistribution.SearchPercent = (double)stats.SourceDistribution.SearchCount / totalVideos * 100;
+            stats.SourceDistribution.HomePercent = (double)stats.SourceDistribution.HomeCount / totalVideos * 100;
+            stats.SourceDistribution.ShortsPercent = (double)stats.SourceDistribution.ShortsCount / totalVideos * 100;
+        }
+
+        stats.LastUpdated = endedAt;
+        _identityDocument.Profile.LastUpdated = endedAt;
+
+        await SaveIdentityAsync();
+    }
+
+    private async Task SaveIdentityAsync()
+    {
+        if (_identityDocument == null || string.IsNullOrEmpty(_identityPath))
+        {
+            return;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_identityPath)!);
+            var options = new JsonSerializerOptions { WriteIndented = true };
+            await File.WriteAllTextAsync(_identityPath, JsonSerializer.Serialize(_identityDocument, options));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Failed to persist YouTube identity document to {Path}.", _identityPath);
+        }
+    }
+
+    private void SetActiveDomain(string domain)
+    {
+        if (_identityDocument?.Profile == null)
+        {
+            return;
+        }
+
+        if (!string.Equals(_identityDocument.Profile.Domain, domain, StringComparison.OrdinalIgnoreCase))
+        {
+            _identityDocument.Profile.Domain = domain;
+        }
     }
 
     private async Task PauseBetweenActionsAsync(YouTubeWarmupSettings warmup)
@@ -922,6 +1577,24 @@ internal class YouTubeWarmupService
         int maxDelay = Math.Max(minDelay, warmup.MaxDelayBetweenActionsMs);
         int pause = _random.Next(minDelay, maxDelay + 1);
         await Task.Delay(pause);
+    }
+
+    private static bool IsBounce(VideoWatchResult result)
+    {
+        if (result.PlannedWatchDurationMs <= 0)
+        {
+            return false;
+        }
+
+        double ratio = (double)result.ActualWatchDurationMs / result.PlannedWatchDurationMs;
+        return ratio <= 0.2;
+    }
+
+    private static string SanitizeFileName(string identityKey)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        var sanitized = new string(identityKey.Select(ch => invalid.Contains(ch) ? '_' : ch).ToArray());
+        return string.IsNullOrWhiteSpace(sanitized) ? "identity" : sanitized;
     }
 
     private static bool IsOnYouTube(string? url)
