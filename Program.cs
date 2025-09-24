@@ -135,7 +135,7 @@ class Program
             logger.LogInformation("Attached to remote browser. Context currently has {PageCount} page(s).", context.Pages?.Count ?? 0);
 
             var warmupLogger = loggerFactory.CreateLogger<WarmupSession>();
-            var warmup = new WarmupSession(settings, browser, context, warmupLogger, loggerFactory);
+            var warmup = new WarmupSession(settings, browser, context, warmupLogger, loggerFactory, profileId);
             await warmup.RunAsync();
         }
         catch (Exception ex)

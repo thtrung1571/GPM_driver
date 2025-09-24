@@ -17,19 +17,22 @@ internal class WarmupSession
     private readonly IBrowserContext _context;
     private readonly ILogger<WarmupSession> _logger;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly string? _profileId;
 
     public WarmupSession(
         AppSettings settings,
         IBrowser browser,
         IBrowserContext context,
         ILogger<WarmupSession> logger,
-        ILoggerFactory loggerFactory)
+        ILoggerFactory loggerFactory,
+        string? profileId)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _browser = browser ?? throw new ArgumentNullException(nameof(browser));
         _context = context ?? throw new ArgumentNullException(nameof(context));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
         _loggerFactory = loggerFactory ?? throw new ArgumentNullException(nameof(loggerFactory));
+        _profileId = profileId;
     }
 
     public async Task RunAsync()
@@ -191,7 +194,7 @@ internal class WarmupSession
 
         try
         {
-            await youtubeWarmup.RunWarmupAsync(keywordDirectory, warmupConfig);
+            await youtubeWarmup.RunWarmupAsync(keywordDirectory, warmupConfig, _profileId);
         }
         catch (Exception ex)
         {

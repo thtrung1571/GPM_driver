@@ -72,4 +72,12 @@ public class YouTubeWarmupSettings
     public int MinDelayBetweenActionsMs { get; set; } = 2000;
     public int MaxDelayBetweenActionsMs { get; set; } = 5000;
     public string[] Domains { get; set; } = new[] { "https://www.youtube.com", "https://www.youtube.com/feed/explore" };
+    public string IdentityCacheDirectory { get; set; } = "youtube-identities";
+    public int IdentityKeywordFileCount { get; set; } = 2;
+    public double RecommendationChainProbability { get; set; } = 0.55;
+    public int MinRecommendationChainLength { get; set; } = 1;
+    public int MaxRecommendationChainLength { get; set; } = 3;
+    public double AutoplayFollowProbability { get; set; } = 0.35;
+    public int MinShortSequenceLength { get; set; } = 2;
+    public int MaxShortSequenceLength { get; set; } = 5;
 }
