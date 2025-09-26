@@ -47,6 +47,12 @@ internal class YouTubeWarmupService
         "gaming highlights"
     };
 
+    private static readonly string[] FreshLandingPhrases =
+    {
+        "thử tìm kiếm để bắt đầu",
+        "try searching to get started"
+    };
+
     private sealed class YouTubeIdentityDocument
     {
         public IdentityProfileInfo Profile { get; set; } = new();
@@ -347,6 +353,29 @@ internal class YouTubeWarmupService
 
     private async Task PerformInteractionAsync(string? keywordDirectory, YouTubeWarmupSettings warmup)
     {
+        await EnsureOnYouTubeAsync(warmup);
+        var page = await EnsurePageAsync();
+        bool freshLanding = await IsFreshLandingExperienceAsync(page);
+        if (freshLanding)
+        {
+            _logger?.LogInformation("Detected fresh YouTube landing page; prioritizing search and Shorts menu interactions.");
+
+            if (_random.NextDouble() < 0.7)
+            {
+                await SearchAndWatchAsync(keywordDirectory, warmup);
+            }
+            else
+            {
+                bool opened = await OpenShortsAsync(warmup, preferGuideMenu: true);
+                if (!opened)
+                {
+                    await SearchAndWatchAsync(keywordDirectory, warmup);
+                }
+            }
+
+            return;
+        }
+
         double normalizedSearchWeight = Math.Clamp(warmup.SearchWeight, 0, 1);
         double normalizedShortsWeight = Math.Clamp(warmup.ShortsWeight, 0, 1 - normalizedSearchWeight);
         double homeWeight = 1 - normalizedSearchWeight - normalizedShortsWeight;
@@ -424,6 +453,41 @@ internal class YouTubeWarmupService
                 // ignore parse failures
             }
         }
+    }
+
+    private async Task<bool> IsFreshLandingExperienceAsync(IPage page)
+    {
+        ILocator wrapper = page.Locator("#content-wrapper");
+        if (!await wrapper.IsVisibleAsync(new LocatorIsVisibleOptions { Timeout = 1000 }))
+        {
+            return false;
+        }
+
+        string? text;
+        try
+        {
+            text = (await wrapper.InnerTextAsync(new LocatorInnerTextOptions { Timeout = 1000 }))?.Trim();
+        }
+        catch
+        {
+            return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        string normalized = text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        foreach (string phrase in FreshLandingPhrases)
+        {
+            if (normalized.Contains(phrase, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task SearchAndWatchAsync(string? keywordDirectory, YouTubeWarmupSettings warmup)
@@ -533,24 +597,42 @@ internal class YouTubeWarmupService
         }
     }
 
-    private async Task<bool> OpenShortsAsync(YouTubeWarmupSettings warmup)
+    private async Task<bool> OpenShortsAsync(YouTubeWarmupSettings warmup, bool preferGuideMenu = false)
     {
         var page = await EnsurePageAsync();
         await EnsureOnYouTubeAsync(warmup);
 
-        var shortsLink = page.Locator("ytd-mini-guide-entry-renderer a[href*='shorts'], a[title='Shorts']");
-        if (!await shortsLink.IsVisibleAsync())
+        bool guideOpened = false;
+        if (preferGuideMenu)
         {
-            var menuButton = page.Locator("button#guide-button, #guide-button");
-            if (await menuButton.CountAsync() > 0 && await menuButton.IsVisibleAsync())
-            {
-                await _mouseHelper!.MoveAndClickAsync(menuButton);
-                await Task.Delay(_random.Next(600, 1200));
-            }
+            guideOpened = await TryEnsureGuideMenuVisibleAsync(page);
         }
 
-        if (!await shortsLink.IsVisibleAsync())
+        var shortsLink = await TryFindShortsLinkAsync(page);
+        if (shortsLink == null || !await shortsLink.IsVisibleAsync())
         {
+            if (!guideOpened)
+            {
+                guideOpened = await TryEnsureGuideMenuVisibleAsync(page);
+            }
+
+            shortsLink = await TryFindShortsLinkAsync(page);
+        }
+
+        if (shortsLink == null || !await shortsLink.IsVisibleAsync())
+        {
+            if (_random.NextDouble() < 0.15)
+            {
+                string baseDomain = GetBaseYouTubeDomain();
+                await page.GotoAsync($"{baseDomain.TrimEnd('/')}/shorts", new PageGotoOptions
+                {
+                    Timeout = 45000,
+                    WaitUntil = WaitUntilState.DOMContentLoaded
+                });
+                await Task.Delay(_random.Next(800, 1500));
+                return await WatchShortsSequenceAsync(warmup);
+            }
+
             return false;
         }
 
@@ -569,7 +651,7 @@ internal class YouTubeWarmupService
         if (count == 0)
         {
             _logger?.LogWarning("No shorts available after navigating to Shorts page.");
-            return true;
+            return false;
         }
 
         int index = _random.Next(0, count);
@@ -805,8 +887,12 @@ internal class YouTubeWarmupService
         double detailRoll = _random.NextDouble();
         if (detailRoll < 0.25)
         {
-            var showMore = page.Locator("#expand, tp-yt-paper-button#expand, #more");
-            if (await showMore.CountAsync() > 0 && await showMore.IsVisibleAsync())
+            var showMore = await TryGetFirstVisibleLocatorAsync(
+                page,
+                "tp-yt-paper-button#expand",
+                "ytd-text-inline-expander tp-yt-paper-button#expand",
+                "ytd-expander tp-yt-paper-button#more");
+            if (showMore != null)
             {
                 if (_mouseHelper != null)
                 {
@@ -814,14 +900,17 @@ internal class YouTubeWarmupService
                 }
                 else
                 {
-                    await showMore.First.ClickAsync();
+                    await showMore.ClickAsync();
                 }
             }
         }
         else if (detailRoll < 0.35)
         {
-            var collapse = page.Locator("#collapse, tp-yt-paper-button#collapse");
-            if (await collapse.CountAsync() > 0 && await collapse.IsVisibleAsync())
+            var collapse = await TryGetFirstVisibleLocatorAsync(
+                page,
+                "tp-yt-paper-button#collapse",
+                "ytd-expander tp-yt-paper-button#collapse");
+            if (collapse != null)
             {
                 if (_mouseHelper != null)
                 {
@@ -829,7 +918,7 @@ internal class YouTubeWarmupService
                 }
                 else
                 {
-                    await collapse.First.ClickAsync();
+                    await collapse.ClickAsync();
                 }
             }
         }
@@ -1871,6 +1960,88 @@ internal class YouTubeWarmupService
         {
             _identityDocument.Profile.Domain = domain;
         }
+    }
+
+    private async Task<bool> TryEnsureGuideMenuVisibleAsync(IPage page)
+    {
+        var miniGuide = page.Locator("#items ytd-mini-guide-entry-renderer");
+        if (await miniGuide.CountAsync() > 0)
+        {
+            var firstItem = miniGuide.First;
+            if (await firstItem.IsVisibleAsync())
+            {
+                return false;
+            }
+        }
+
+        var menuButton = page.Locator("ytd-masthead button#guide-button").First;
+        if (!await menuButton.IsVisibleAsync())
+        {
+            return false;
+        }
+
+        if (_mouseHelper != null)
+        {
+            await _mouseHelper.MoveAndClickAsync(menuButton);
+        }
+        else
+        {
+            await menuButton.ClickAsync();
+        }
+
+        await Task.Delay(_random.Next(600, 1200));
+        return true;
+    }
+
+    private async Task<ILocator?> TryGetFirstVisibleLocatorAsync(IPage page, params string[] selectors)
+    {
+        foreach (string selector in selectors)
+        {
+            var locator = page.Locator(selector);
+            int count;
+            try
+            {
+                count = await locator.CountAsync();
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (count == 0)
+            {
+                continue;
+            }
+
+            var candidate = locator.First;
+            if (await candidate.IsVisibleAsync())
+            {
+                return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private Task<ILocator?> TryFindShortsLinkAsync(IPage page)
+    {
+        return TryGetFirstVisibleLocatorAsync(
+            page,
+            "#items ytd-mini-guide-entry-renderer:nth-child(2) a",
+            "ytd-mini-guide-entry-renderer a[href*='shorts']",
+            "a[title='Shorts']",
+            "a[href='/shorts']");
+    }
+
+    private string GetBaseYouTubeDomain()
+    {
+        string? domain = _identityDocument?.Profile?.Domain;
+        if (!string.IsNullOrWhiteSpace(domain) && Uri.TryCreate(domain, UriKind.Absolute, out var uri))
+        {
+            return $"{uri.Scheme}://{uri.Host}";
+        }
+
+        return "https://www.youtube.com";
     }
 
     private async Task PauseBetweenActionsAsync(YouTubeWarmupSettings warmup)
