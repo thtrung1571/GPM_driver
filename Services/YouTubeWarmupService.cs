@@ -483,6 +483,395 @@ internal class YouTubeWarmupService
             async settings => await _homeService!.ExecuteAsync(settings));
     }
 
+    private async Task EnsureIdentityAsync(string? keywordDirectory, YouTubeWarmupSettings warmup, string? profileKey)
+    {
+        _identityKey = string.IsNullOrWhiteSpace(profileKey) ? "default" : profileKey;
+
+        string identityRoot = ResolvePath(warmup.IdentityCacheDirectory, "youtube-identities");
+        _identityDirectory = Path.Combine(identityRoot, SanitizeFileName(_identityKey));
+        _sessionsDirectory = Path.Combine(_identityDirectory, "sessions");
+        _identityPath = Path.Combine(_identityDirectory, "identity.json");
+
+        Directory.CreateDirectory(_identityDirectory);
+        Directory.CreateDirectory(_sessionsDirectory);
+
+        if (_identityDocument == null && File.Exists(_identityPath))
+        {
+            try
+            {
+                string json = await File.ReadAllTextAsync(_identityPath);
+                _identityDocument = JsonSerializer.Deserialize<YouTubeIdentityDocument>(json);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogWarning(ex, "Failed to deserialize YouTube identity from {Path}.", _identityPath);
+            }
+        }
+
+        if (_identityDocument == null)
+        {
+            _identityDocument = new YouTubeIdentityDocument
+            {
+                Profile = new IdentityProfileInfo
+                {
+                    ProfileId = _identityKey,
+                    Persona = warmup.Persona,
+                    Region = warmup.Region,
+                    Language = warmup.Language,
+                    Domain = warmup.Domains?.FirstOrDefault() ?? "https://www.youtube.com",
+                    Timezone = !string.IsNullOrWhiteSpace(warmup.Timezone) ? warmup.Timezone : TimeZoneInfo.Local.Id,
+                    CreatedAt = DateTimeOffset.UtcNow,
+                    LastUpdated = DateTimeOffset.UtcNow,
+                    Behaviors = warmup.Behaviors ?? Array.Empty<string>()
+                },
+                Keywords = new KeywordSection(),
+                Stats = new IdentityStats(),
+                Playback = new IdentityPlaybackPreferences(),
+                SourceFiles = new List<string>()
+            };
+        }
+
+        _identityDocument.Profile ??= new IdentityProfileInfo();
+        _identityDocument.Profile.ProfileId = string.IsNullOrWhiteSpace(_identityDocument.Profile.ProfileId)
+            ? _identityKey
+            : _identityDocument.Profile.ProfileId;
+        if (string.IsNullOrWhiteSpace(_identityDocument.Profile.Domain))
+        {
+            _identityDocument.Profile.Domain = warmup.Domains?.FirstOrDefault() ?? "https://www.youtube.com";
+        }
+        _identityDocument.Profile.Behaviors = _identityDocument.Profile.Behaviors?.Length > 0
+            ? _identityDocument.Profile.Behaviors
+            : (warmup.Behaviors ?? Array.Empty<string>());
+
+        _identityDocument.Keywords ??= new KeywordSection();
+        _identityDocument.Keywords.UsedHistory ??= new List<KeywordUsageRecord>();
+        _identityDocument.Keywords.KeywordHistory ??= new List<KeywordVideoRecord>();
+        _identityDocument.Playback ??= new IdentityPlaybackPreferences();
+        _identityDocument.Stats ??= new IdentityStats();
+        _identityDocument.SourceFiles ??= new List<string>();
+
+        var keywordSet = new HashSet<string>(_identityDocument.Keywords.SeedList ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+        if (keywordSet.Count == 0)
+        {
+            var fromDirectory = LoadKeywordsFromDirectory(keywordDirectory, warmup.IdentityKeywordFileCount);
+            foreach (var keyword in fromDirectory)
+            {
+                keywordSet.Add(keyword);
+            }
+
+            if (keywordSet.Count == 0)
+            {
+                foreach (var fallback in FallbackKeywords)
+                {
+                    keywordSet.Add(fallback);
+                }
+            }
+
+            _identityDocument.Keywords.SeedList = keywordSet.ToList();
+        }
+
+        _identityKeywords.Clear();
+        _identityKeywords.AddRange(keywordSet);
+    }
+
+    private List<string> LoadKeywordsFromDirectory(string? keywordDirectory, int desiredFileCount)
+    {
+        var results = new List<string>();
+        if (string.IsNullOrWhiteSpace(keywordDirectory))
+        {
+            return results;
+        }
+
+        string resolvedDirectory = ResolvePath(keywordDirectory, keywordDirectory);
+        if (!Directory.Exists(resolvedDirectory))
+        {
+            _logger?.LogDebug("Keyword directory {Directory} does not exist.", resolvedDirectory);
+            return results;
+        }
+
+        var files = Directory.EnumerateFiles(resolvedDirectory, "*.txt", SearchOption.AllDirectories).ToList();
+        if (files.Count == 0)
+        {
+            return results;
+        }
+
+        files = files.OrderBy(_ => _random.Next()).ToList();
+        int takeCount = desiredFileCount <= 0 ? files.Count : Math.Min(desiredFileCount, files.Count);
+        var selectedFiles = files.Take(takeCount).ToList();
+
+        _identityDocument?.SourceFiles?.Clear();
+        _identityDocument?.SourceFiles?.AddRange(selectedFiles);
+
+        foreach (var file in selectedFiles)
+        {
+            try
+            {
+                foreach (var line in File.ReadAllLines(file))
+                {
+                    var trimmed = line.Trim();
+                    if (!string.IsNullOrWhiteSpace(trimmed))
+                    {
+                        results.Add(trimmed);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to read keywords from {File}.", file);
+            }
+        }
+
+        return results;
+    }
+
+    private static string ResolvePath(string? candidate, string? defaultRelative)
+    {
+        string baseDirectory = AppContext.BaseDirectory ?? Environment.CurrentDirectory;
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return string.IsNullOrWhiteSpace(defaultRelative)
+                ? baseDirectory
+                : Path.Combine(baseDirectory, defaultRelative);
+        }
+
+        if (Path.IsPathRooted(candidate))
+        {
+            return candidate;
+        }
+
+        return Path.Combine(baseDirectory, candidate);
+    }
+
+    private void RegisterInteractionFailure()
+    {
+        _sessionFailureCount++;
+        if (_identityDocument?.Stats != null)
+        {
+            _identityDocument.Stats.FailedInteractions++;
+            _identityDocument.Stats.LastUpdated = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private void RecordVideoWatch(VideoWatchResult result)
+    {
+        if (result == null)
+        {
+            return;
+        }
+
+        var interaction = new SessionInteraction
+        {
+            Context = result.Context,
+            ContextDetail = result.ContextDetail,
+            EntryPoint = result.EntryPoint,
+            Method = result.Method,
+            ResultPosition = result.ResultPosition,
+            Keyword = result.Keyword,
+            VideoUrl = result.Url,
+            Title = result.Title,
+            ChannelName = result.ChannelName,
+            PlannedWatchMs = result.PlannedWatchDurationMs,
+            ActualWatchMs = result.ActualWatchDurationMs,
+            StartedAt = result.StartedAt,
+            IsShort = result.IsShort,
+            ParentVideo = result.ParentVideoUrl,
+            ParentVideoTitle = result.ParentVideoTitle,
+            ParentContext = result.ParentContext,
+            VideoType = result.VideoType.ToString(),
+            VolumePercent = result.VolumePercent
+        };
+
+        _sessionInteractions.Add(interaction);
+        _sessionTotalWatchTimeMs += result.ActualWatchDurationMs;
+
+        if (IsBounce(result))
+        {
+            _sessionBounceCount++;
+        }
+
+        if (!string.IsNullOrWhiteSpace(result.EntryPoint))
+        {
+            string key = result.EntryPoint;
+            _sessionSourceCounts.TryGetValue(key, out var count);
+            _sessionSourceCounts[key] = count + 1;
+        }
+
+        if (_identityDocument?.Keywords != null && !string.IsNullOrWhiteSpace(result.Keyword) && !string.IsNullOrWhiteSpace(result.Url))
+        {
+            _identityDocument.Keywords.KeywordHistory ??= new List<KeywordVideoRecord>();
+            _identityDocument.Keywords.KeywordHistory.Add(new KeywordVideoRecord
+            {
+                Keyword = result.Keyword!,
+                VideoUrl = result.Url!,
+                WatchedMs = result.ActualWatchDurationMs,
+                WatchedAt = result.StartedAt,
+                VideoType = result.VideoType.ToString(),
+                VolumePercent = result.VolumePercent
+            });
+
+            const int maxHistory = 200;
+            if (_identityDocument.Keywords.KeywordHistory.Count > maxHistory)
+            {
+                int excess = _identityDocument.Keywords.KeywordHistory.Count - maxHistory;
+                _identityDocument.Keywords.KeywordHistory.RemoveRange(0, excess);
+            }
+        }
+
+        if (_identityDocument?.Playback != null && result.VolumePercent.HasValue)
+        {
+            _identityDocument.Playback.LastVolumePercent = result.VolumePercent;
+        }
+    }
+
+    private async Task NavigateHomeAsync()
+    {
+        var page = await EnsurePageAsync();
+        string previousUrl = page.Url ?? string.Empty;
+        string target = GetBaseYouTubeDomain().TrimEnd('/') + "/";
+
+        if (string.Equals(page.Url, target, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        try
+        {
+            await page.GotoAsync(target, new PageGotoOptions
+            {
+                Timeout = 60000,
+                WaitUntil = WaitUntilState.DOMContentLoaded
+            });
+            await WaitForNavigationAsync(page, previousUrl);
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed navigating home to {Target}.", target);
+        }
+    }
+
+    private void RegisterKeywordUsage(string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword) || _identityDocument?.Keywords == null)
+        {
+            return;
+        }
+
+        var history = _identityDocument.Keywords.UsedHistory ??= new List<KeywordUsageRecord>();
+        var record = history.FirstOrDefault(r => string.Equals(r.Keyword, keyword, StringComparison.OrdinalIgnoreCase));
+        if (record == null)
+        {
+            record = new KeywordUsageRecord
+            {
+                Keyword = keyword,
+                TimesUsed = 1,
+                LastUsed = DateTimeOffset.UtcNow
+            };
+            history.Add(record);
+        }
+        else
+        {
+            record.TimesUsed++;
+            record.LastUsed = DateTimeOffset.UtcNow;
+        }
+    }
+
+    private async Task<ILocator> FocusSearchBoxAsync()
+    {
+        var page = await EnsurePageAsync();
+        var input = page.Locator("input#search, input[name='search_query']").First;
+
+        await input.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Visible, Timeout = 5000 });
+
+        bool isFocused = await IsElementFocusedAsync(input);
+        if (!isFocused)
+        {
+            if (_mouseHelper != null)
+            {
+                await _mouseHelper.MoveAndClickAsync(input);
+            }
+            else
+            {
+                await input.ClickAsync(new LocatorClickOptions { Delay = _random.Next(80, 200) });
+            }
+        }
+
+        await Task.Delay(_random.Next(120, 260));
+        return input;
+    }
+
+    private async Task ClearInputAsync(ILocator input)
+    {
+        if (!await IsElementFocusedAsync(input))
+        {
+            await input.ClickAsync(new LocatorClickOptions { Delay = _random.Next(60, 160) });
+        }
+
+        try
+        {
+            await input.PressAsync("Control+A");
+            await Task.Delay(_random.Next(80, 180));
+            await input.PressAsync("Delete");
+        }
+        catch
+        {
+            // Fall back to direct fill if key-based clearing fails (e.g., macOS meta key)
+            try
+            {
+                await input.FillAsync(string.Empty);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to clear YouTube search input.");
+            }
+        }
+
+        await Task.Delay(_random.Next(120, 240));
+    }
+
+    private async Task<bool> IsElementFocusedAsync(ILocator locator)
+    {
+        try
+        {
+            return await locator.EvaluateAsync<bool>("el => document.activeElement === el");
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private Task<string> PickKeywordAsync(string? keywordDirectory)
+    {
+        if (_identityKeywords.Count == 0)
+        {
+            var fallback = LoadKeywordsFromDirectory(keywordDirectory, 1);
+            if (fallback.Count == 0)
+            {
+                fallback.AddRange(FallbackKeywords);
+            }
+
+            _identityKeywords.AddRange(fallback);
+        }
+
+        var usageLookup = _identityDocument?.Keywords?.UsedHistory?
+            .ToDictionary(k => k.Keyword, k => k, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, KeywordUsageRecord>(StringComparer.OrdinalIgnoreCase);
+
+        var ordered = _identityKeywords
+            .OrderBy(k => usageLookup.TryGetValue(k, out var record) ? record.TimesUsed : 0)
+            .ThenBy(k => usageLookup.TryGetValue(k, out var record) ? record.LastUsed ?? DateTimeOffset.MinValue : DateTimeOffset.MinValue)
+            .ThenBy(_ => _random.Next())
+            .ToList();
+
+        if (ordered.Count == 0)
+        {
+            return Task.FromResult(FallbackKeywords[_random.Next(FallbackKeywords.Length)]);
+        }
+
+        int poolSize = Math.Min(ordered.Count, Math.Max(3, ordered.Count / 3));
+        return Task.FromResult(ordered[_random.Next(poolSize)]);
+    }
+
     private Task PauseAfterPlaybackAsync() => Task.Delay(_random.Next(400, 900));
 
     private YouTubeWarmupService.IdentityPlaybackPreferences? GetPlaybackPreferences()

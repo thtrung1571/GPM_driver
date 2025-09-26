@@ -77,6 +77,7 @@ public class YouTubeWarmupSettings
     public double RecommendationChainProbability { get; set; } = 0.55;
     public int MinRecommendationChainLength { get; set; } = 1;
     public int MaxRecommendationChainLength { get; set; } = 3;
+    public int MaxRecommendationDepth { get; set; } = 3;
     public double AutoplayFollowProbability { get; set; } = 0.35;
     public int MinShortSequenceLength { get; set; } = 2;
     public int MaxShortSequenceLength { get; set; } = 5;

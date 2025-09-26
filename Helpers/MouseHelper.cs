@@ -160,5 +160,18 @@ namespace GPM_driver.Helpers
 
             await Task.Delay(_random.Next(200, 1000));
         }
+
+        /// <summary>
+        /// Moves the mouse towards an absolute coordinate in the viewport using the same easing logic
+        /// as element-based moves. Useful for lightweight jitter or targeting screen regions.
+        /// </summary>
+        public Task MoveAsync(double x, double y, int steps = 15, bool addJitter = true)
+            => MoveToCoordinatesAsync(x, y, steps, addJitter);
+
+        /// <summary>
+        /// Convenience overload for integer coordinates.
+        /// </summary>
+        public Task MoveAsync(int x, int y, int steps = 15, bool addJitter = true)
+            => MoveAsync((double)x, (double)y, steps, addJitter);
     }
 }
