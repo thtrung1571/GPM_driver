@@ -14,7 +14,7 @@ namespace GPM_driver.Services
         private readonly IPage _page;
         private readonly IBrowser _browser;
         private readonly string _keywordFolder;
-        private readonly Random _random = new Random();
+        private readonly Random _random = RandomProvider.Shared;
 
         public SmartSearchService(IPage page, IBrowser browser, string keywordFolder = @"E:\Google_Farm\google\")
         {

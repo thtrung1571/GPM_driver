@@ -12,7 +12,7 @@ namespace GPM_driver.Behaviors.Actions
         public IdleBehavior(MouseHelper mouseHelper)
         {
             _mouseHelper = mouseHelper ?? throw new ArgumentNullException(nameof(mouseHelper));
-            _random = new Random(Guid.NewGuid().GetHashCode());
+            _random = RandomProvider.Shared;
         }
 
         public async Task RandomPauseAsync(int minMs = 500, int maxMs = 3000)

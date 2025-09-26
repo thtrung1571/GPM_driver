@@ -8,7 +8,7 @@ namespace GPM_driver.Behaviors.Personas
 {
     internal class FastScanner : IPersona
     {
-        private readonly Random _rng = new Random(Guid.NewGuid().GetHashCode());
+        private readonly Random _rng = RandomProvider.Shared;
 
         public async Task PerformAsync(IPage page, MouseHelper mouse, KeyboardHelper keyboard, RetentionBucket bucket, int durationSeconds)
         {

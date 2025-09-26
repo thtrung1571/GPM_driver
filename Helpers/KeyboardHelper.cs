@@ -12,8 +12,8 @@ namespace GPM_driver.Helpers
         public KeyboardHelper(IPage page)
         {
             _page = page;
-            // Use stronger entropy for more realistic behavior
-            _random = new Random(Guid.NewGuid().GetHashCode());
+            // Use shared RNG to prevent duplicate seeds and allow future overrides
+            _random = RandomProvider.Shared;
         }
 
         /// <summary>
