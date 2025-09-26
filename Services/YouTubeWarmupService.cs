@@ -52,6 +52,7 @@ internal class YouTubeWarmupService
         public IdentityProfileInfo Profile { get; set; } = new();
         public KeywordSection Keywords { get; set; } = new();
         public IdentityStats Stats { get; set; } = new();
+        public IdentityPlaybackPreferences Playback { get; set; } = new();
         public List<string> SourceFiles { get; set; } = new();
     }
 
@@ -91,6 +92,21 @@ internal class YouTubeWarmupService
         public int WatchedMs { get; set; }
             = 0;
         public DateTimeOffset WatchedAt { get; set; } = DateTimeOffset.UtcNow;
+        public string VideoType { get; set; } = string.Empty;
+        public int? VolumePercent { get; set; }
+            = null;
+    }
+
+    private sealed class IdentityPlaybackPreferences
+    {
+        public int MinVolumePercent { get; set; }
+            = 20;
+        public int MaxVolumePercent { get; set; }
+            = 80;
+        public int? LastVolumePercent { get; set; }
+            = null;
+        public double VolumeAdjustmentChance { get; set; }
+            = 0.6;
     }
 
     private sealed class IdentityStats
@@ -165,6 +181,10 @@ internal class YouTubeWarmupService
             = null;
         public string? ParentContext { get; set; }
             = null;
+        public YouTubeUrlHelper.YouTubeVideoKind VideoType { get; set; }
+            = YouTubeUrlHelper.YouTubeVideoKind.Unknown;
+        public int? VolumePercent { get; set; }
+            = null;
     }
 
     private sealed class SessionInteraction
@@ -195,6 +215,9 @@ internal class YouTubeWarmupService
         public string? ParentVideoTitle { get; set; }
             = null;
         public string? ParentContext { get; set; }
+            = null;
+        public string VideoType { get; set; } = YouTubeUrlHelper.YouTubeVideoKind.Unknown.ToString();
+        public int? VolumePercent { get; set; }
             = null;
     }
 
@@ -497,7 +520,7 @@ internal class YouTubeWarmupService
         await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
         var result = await WatchVideoAsync(
             warmup,
-            context: "Home",
+            context: "RecommendationHome",
             method: "HomeRecommendation",
             contextDetail: $"HomeRecommendation#{index + 1}",
             entryPoint: "Home",
@@ -623,6 +646,120 @@ internal class YouTubeWarmupService
         return false;
     }
 
+    private async Task<int?> MaybeAdjustVolumeAsync(IPage page)
+    {
+        var playback = _identityDocument?.Playback;
+        if (playback == null)
+        {
+            return null;
+        }
+
+        playback.MinVolumePercent = Math.Clamp(playback.MinVolumePercent, 0, 100);
+        playback.MaxVolumePercent = Math.Clamp(playback.MaxVolumePercent, 0, 100);
+        if (playback.MinVolumePercent > playback.MaxVolumePercent)
+        {
+            (playback.MinVolumePercent, playback.MaxVolumePercent) = (playback.MaxVolumePercent, playback.MinVolumePercent);
+        }
+
+        playback.VolumeAdjustmentChance = Math.Clamp(playback.VolumeAdjustmentChance, 0, 1);
+        if (playback.VolumeAdjustmentChance <= 0)
+        {
+            playback.VolumeAdjustmentChance = 0.6;
+        }
+
+        if (_random.NextDouble() > playback.VolumeAdjustmentChance)
+        {
+            return playback.LastVolumePercent;
+        }
+
+        double? currentVolume = null;
+        try
+        {
+            currentVolume = await page.EvaluateAsync<double?>("() => { const video = document.querySelector('video'); return video ? video.volume : null; }");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to read current YouTube volume.");
+        }
+
+        int min = playback.MinVolumePercent;
+        int max = playback.MaxVolumePercent;
+        int targetPercent = min == max ? min : _random.Next(min, max + 1);
+        double targetVolume = Math.Clamp(targetPercent / 100.0, 0, 1);
+
+        if (currentVolume.HasValue && Math.Abs(currentVolume.Value - targetVolume) < 0.03 && _random.NextDouble() < 0.4)
+        {
+            int currentPercent = Math.Clamp((int)Math.Round(currentVolume.Value * 100), 0, 100);
+            playback.LastVolumePercent = currentPercent;
+            return currentPercent;
+        }
+
+        var videoLocator = page.Locator("video.html5-main-video, ytd-player video");
+        try
+        {
+            if (await videoLocator.CountAsync() > 0)
+            {
+                if (_mouseHelper != null)
+                {
+                    await _mouseHelper.MoveAndClickAsync(videoLocator.First);
+                }
+                else
+                {
+                    await videoLocator.First.ClickAsync();
+                }
+
+                await Task.Delay(_random.Next(120, 260));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to focus video element before adjusting volume.");
+        }
+
+        bool usedKeyboard = _random.NextDouble() < 0.65;
+        if (usedKeyboard)
+        {
+            double startingVolume = currentVolume ?? (playback.LastVolumePercent.HasValue ? playback.LastVolumePercent.Value / 100.0 : 0.5);
+            double step = 0.05;
+            int steps = (int)Math.Round((targetVolume - startingVolume) / step);
+            string key = steps >= 0 ? "ArrowUp" : "ArrowDown";
+
+            for (int i = 0; i < Math.Abs(steps); i++)
+            {
+                await page.Keyboard.PressAsync(key);
+                await Task.Delay(_random.Next(70, 150));
+            }
+        }
+        else
+        {
+            try
+            {
+                await page.EvaluateAsync("(vol) => { const video = document.querySelector('video'); if (video) { video.volume = Math.min(1, Math.max(0, vol)); } }", targetVolume);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogDebug(ex, "Failed to set YouTube volume via script.");
+            }
+        }
+
+        double? finalVolume = null;
+        try
+        {
+            finalVolume = await page.EvaluateAsync<double?>("() => { const video = document.querySelector('video'); return video ? video.volume : null; }");
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to read final YouTube volume.");
+        }
+
+        int? finalPercent = finalVolume.HasValue
+            ? (int?)Math.Clamp((int)Math.Round(finalVolume.Value * 100), 0, 100)
+            : targetPercent;
+
+        playback.LastVolumePercent = finalPercent;
+        return finalPercent;
+    }
+
     private async Task<VideoWatchResult?> WatchVideoAsync(
         YouTubeWarmupSettings warmup,
         string context,
@@ -643,6 +780,7 @@ internal class YouTubeWarmupService
             _logger?.LogWarning("Video element did not appear for context {Context}.", context);
         }
 
+        int? volumePercent = await MaybeAdjustVolumeAsync(page);
         int planned = PlanWatchDuration(warmup.MinWatchMilliseconds, warmup.MaxWatchMilliseconds);
         int actualTarget = ApplyWatchDurationJitter(planned, warmup.MinWatchMilliseconds, warmup.MaxWatchMilliseconds);
         var start = DateTimeOffset.Now;
@@ -662,12 +800,35 @@ internal class YouTubeWarmupService
             await ScrollHelper.ScrollRandomAsync(page, _random.Next(1, 4));
         }
 
-        if (_random.NextDouble() < 0.25)
+        double detailRoll = _random.NextDouble();
+        if (detailRoll < 0.25)
         {
             var showMore = page.Locator("#expand, tp-yt-paper-button#expand, #more");
             if (await showMore.CountAsync() > 0 && await showMore.IsVisibleAsync())
             {
-                await _mouseHelper!.MoveAndClickAsync(showMore);
+                if (_mouseHelper != null)
+                {
+                    await _mouseHelper.MoveAndClickAsync(showMore);
+                }
+                else
+                {
+                    await showMore.First.ClickAsync();
+                }
+            }
+        }
+        else if (detailRoll < 0.35)
+        {
+            var collapse = page.Locator("#collapse, tp-yt-paper-button#collapse");
+            if (await collapse.CountAsync() > 0 && await collapse.IsVisibleAsync())
+            {
+                if (_mouseHelper != null)
+                {
+                    await _mouseHelper.MoveAndClickAsync(collapse);
+                }
+                else
+                {
+                    await collapse.First.ClickAsync();
+                }
             }
         }
 
@@ -690,8 +851,12 @@ internal class YouTubeWarmupService
             IsShort = false,
             ParentVideoUrl = parent?.Url,
             ParentVideoTitle = parent?.Title,
-            ParentContext = parent?.ContextDetail ?? parent?.Context
+            ParentContext = parent?.ContextDetail ?? parent?.Context,
+            VolumePercent = volumePercent
         };
+
+        result.VideoType = YouTubeUrlHelper.GetVideoKind(result.Url);
+        result.IsShort = result.VideoType == YouTubeUrlHelper.YouTubeVideoKind.Short;
 
         RecordVideoWatch(result);
         return result;
@@ -707,6 +872,7 @@ internal class YouTubeWarmupService
         VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
+        int? volumePercent = await MaybeAdjustVolumeAsync(page);
         int planned = PlanWatchDuration(warmup.MinShortWatchMilliseconds, warmup.MaxShortWatchMilliseconds);
         int actualTarget = ApplyWatchDurationJitter(planned, warmup.MinShortWatchMilliseconds, warmup.MaxShortWatchMilliseconds);
         var start = DateTimeOffset.Now;
@@ -738,8 +904,12 @@ internal class YouTubeWarmupService
             IsShort = true,
             ParentVideoUrl = parent?.Url,
             ParentVideoTitle = parent?.Title,
-            ParentContext = parent?.ContextDetail ?? parent?.Context
+            ParentContext = parent?.ContextDetail ?? parent?.Context,
+            VolumePercent = volumePercent
         };
+
+        result.VideoType = YouTubeUrlHelper.GetVideoKind(result.Url);
+        result.IsShort = result.VideoType == YouTubeUrlHelper.YouTubeVideoKind.Short;
 
         RecordVideoWatch(result);
         return result;
@@ -815,9 +985,11 @@ internal class YouTubeWarmupService
                 break;
             }
 
+            string recommendationContext = "RecommendationNext";
+
             var result = await WatchVideoAsync(
                 warmup,
-                context: "Recommendation",
+                context: recommendationContext,
                 method: method,
                 contextDetail: contextDetail,
                 entryPoint: parent.EntryPoint,
@@ -1185,6 +1357,41 @@ internal class YouTubeWarmupService
         }
 
         document.SourceFiles ??= new List<string>();
+        if (document.Playback == null)
+        {
+            document.Playback = CreatePlaybackPreferences();
+            updated = true;
+        }
+        if (document.Playback.MinVolumePercent < 0 || document.Playback.MinVolumePercent > 100)
+        {
+            document.Playback.MinVolumePercent = 20;
+            updated = true;
+        }
+        if (document.Playback.MaxVolumePercent < 0 || document.Playback.MaxVolumePercent > 100)
+        {
+            document.Playback.MaxVolumePercent = 80;
+            updated = true;
+        }
+        if (document.Playback.MinVolumePercent > document.Playback.MaxVolumePercent)
+        {
+            (document.Playback.MinVolumePercent, document.Playback.MaxVolumePercent) = (document.Playback.MaxVolumePercent, document.Playback.MinVolumePercent);
+            updated = true;
+        }
+        if (document.Playback.VolumeAdjustmentChance <= 0 || document.Playback.VolumeAdjustmentChance > 1)
+        {
+            document.Playback.VolumeAdjustmentChance = 0.6;
+            updated = true;
+        }
+        else
+        {
+            double clampedChance = Math.Clamp(document.Playback.VolumeAdjustmentChance, 0, 1);
+            if (!document.Playback.VolumeAdjustmentChance.Equals(clampedChance))
+            {
+                document.Playback.VolumeAdjustmentChance = clampedChance;
+                updated = true;
+            }
+        }
+
         document.Stats ??= new IdentityStats();
         document.Stats.SourceDistribution ??= new SourceBreakdown();
 
@@ -1203,6 +1410,27 @@ internal class YouTubeWarmupService
         {
             await SaveIdentityAsync();
         }
+    }
+
+    private IdentityPlaybackPreferences CreatePlaybackPreferences()
+    {
+        int min = _random.Next(10, 41);
+        int maxLowerBound = Math.Max(min + 15, 55);
+        maxLowerBound = Math.Min(maxLowerBound, 95);
+        int max = _random.Next(maxLowerBound, 101);
+        if (max < min)
+        {
+            max = Math.Min(90, min + 10);
+        }
+
+        double chance = 0.45 + _random.NextDouble() * 0.35;
+
+        return new IdentityPlaybackPreferences
+        {
+            MinVolumePercent = Math.Clamp(min, 0, 100),
+            MaxVolumePercent = Math.Clamp(Math.Max(max, min + 5), 0, 100),
+            VolumeAdjustmentChance = Math.Clamp(chance, 0.1, 0.95)
+        };
     }
 
     private async Task<YouTubeIdentityDocument> CreateNewIdentityDocumentAsync(string? keywordDirectory, YouTubeWarmupSettings warmup)
@@ -1246,6 +1474,7 @@ internal class YouTubeWarmupService
                 LastUpdated = DateTimeOffset.UtcNow,
                 SourceDistribution = new SourceBreakdown()
             },
+            Playback = CreatePlaybackPreferences(),
             SourceFiles = sources
         };
     }
@@ -1343,13 +1572,17 @@ internal class YouTubeWarmupService
                 Keyword = result.Keyword!,
                 VideoUrl = result.Url!,
                 WatchedMs = result.ActualWatchDurationMs,
-                WatchedAt = result.StartedAt
+                WatchedAt = result.StartedAt,
+                VideoType = result.VideoType.ToString(),
+                VolumePercent = result.VolumePercent
             });
         }
         else
         {
             existing.WatchedMs = result.ActualWatchDurationMs;
             existing.WatchedAt = result.StartedAt;
+            existing.VideoType = result.VideoType.ToString();
+            existing.VolumePercent = result.VolumePercent;
         }
 
         const int maxHistory = 200;
@@ -1368,7 +1601,7 @@ internal class YouTubeWarmupService
         string channel = rawChannel ?? "(unknown)";
 
         _logger?.LogInformation(
-            "YouTube watch identity={Identity} entry={Entry} context={Context} detail={Detail} method={Method} url={Url} title={Title} channel={Channel} planned_ms={Planned} actual_ms={Actual} started={Started:o} short={IsShort} parent={Parent}.",
+            "YouTube watch identity={Identity} entry={Entry} context={Context} detail={Detail} method={Method} url={Url} title={Title} channel={Channel} type={Type} planned_ms={Planned} actual_ms={Actual} started={Started:o} short={IsShort} volume={Volume} parent={Parent}.",
             _identityKey,
             result.EntryPoint,
             result.Context,
@@ -1377,10 +1610,12 @@ internal class YouTubeWarmupService
             result.Url ?? "unknown",
             title,
             channel,
+            result.VideoType,
             result.PlannedWatchDurationMs,
             result.ActualWatchDurationMs,
             result.StartedAt,
             result.IsShort,
+            result.VolumePercent,
             result.ParentVideoUrl ?? "none");
 
         var interaction = new SessionInteraction
@@ -1400,7 +1635,9 @@ internal class YouTubeWarmupService
             IsShort = result.IsShort,
             ParentVideo = result.ParentVideoUrl,
             ParentVideoTitle = result.ParentVideoTitle,
-            ParentContext = result.ParentContext
+            ParentContext = result.ParentContext,
+            VideoType = result.VideoType.ToString(),
+            VolumePercent = result.VolumePercent
         };
 
         _sessionInteractions.Add(interaction);
@@ -1417,6 +1654,11 @@ internal class YouTubeWarmupService
             _sessionSourceCounts[entryPoint] = 0;
         }
         _sessionSourceCounts[entryPoint]++;
+
+        if (result.VolumePercent.HasValue && _identityDocument?.Playback != null)
+        {
+            _identityDocument.Playback.LastVolumePercent = Math.Clamp(result.VolumePercent.Value, 0, 100);
+        }
 
         UpdateKeywordHistory(result);
     }
