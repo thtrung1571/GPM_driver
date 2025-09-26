@@ -448,7 +448,7 @@ internal class YouTubeWarmupService
 
         _homeService ??= new HomeInteractionService(
             EnsurePageAsync,
-            NavigateHomeAsync,
+            async _ => await NavigateHomeAsync(),
             _videoPlayer,
             _recommendationService,
             WaitForNavigationAsync,
@@ -541,7 +541,7 @@ internal class YouTubeWarmupService
         }
         _identityDocument.Profile.Behaviors = _identityDocument.Profile.Behaviors?.Length > 0
             ? _identityDocument.Profile.Behaviors
-            : (warmup.Behaviors ?? Array.Empty<string>());
+            : (warmup.Behaviors != null ? warmup.Behaviors.ToArray() : Array.Empty<string>());
 
         _identityDocument.Keywords ??= new KeywordSection();
         _identityDocument.Keywords.UsedHistory ??= new List<KeywordUsageRecord>();
