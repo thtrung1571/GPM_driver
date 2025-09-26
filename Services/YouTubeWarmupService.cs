@@ -508,6 +508,7 @@ internal class YouTubeWarmupService
         await Task.Delay(_random.Next(400, 1200));
 
         double decision = _random.NextDouble();
+        string previousUrl = page.Url;
         if (decision < 0.4)
         {
             var searchButton = page.Locator("button#search-icon-legacy");
@@ -530,8 +531,7 @@ internal class YouTubeWarmupService
             await input.PressAsync("Enter");
         }
 
-        await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-        await Task.Delay(_random.Next(1200, 2500));
+        await WaitForNavigationAsync(page, previousUrl);
 
         var videoTiles = page.Locator("ytd-video-renderer a#thumbnail, ytd-grid-video-renderer a#thumbnail");
         if (await videoTiles.CountAsync() == 0)
@@ -544,10 +544,11 @@ internal class YouTubeWarmupService
         var target = videoTiles.Nth(index);
         _logger?.LogInformation("Opening YouTube search result #{Index}.", index + 1);
         await ScrollHelper.ScrollToElementAsync(page, target);
+        string beforeClickUrl = page.Url;
         await _mouseHelper!.MoveAndClickAsync(target);
 
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-        var result = await WatchVideoAsync(
+        await WaitForNavigationAsync(page, beforeClickUrl);
+        var result = await WatchCurrentEntryAsync(
             warmup,
             context: "Search",
             method: "SearchResult",
@@ -580,9 +581,11 @@ internal class YouTubeWarmupService
         var target = richItems.Nth(index);
         _logger?.LogInformation("Opening YouTube home recommendation #{Index} of {Total}.", index + 1, count);
         await ScrollHelper.ScrollToElementAsync(page, target);
+        string beforeClickUrl = page.Url;
         await _mouseHelper!.MoveAndClickAsync(target);
-        await page.WaitForLoadStateAsync(LoadState.NetworkIdle);
-        var result = await WatchVideoAsync(
+        await WaitForNavigationAsync(page, beforeClickUrl);
+
+        var result = await WatchCurrentEntryAsync(
             warmup,
             context: "RecommendationHome",
             method: "HomeRecommendation",
@@ -657,8 +660,9 @@ internal class YouTubeWarmupService
         int index = _random.Next(0, count);
         var target = shortsTiles.Nth(index);
         _logger?.LogInformation("Opening YouTube short #{Index} of {Total}.", index + 1, count);
+        string beforeClickUrl = page.Url;
         await _mouseHelper!.MoveAndClickAsync(target);
-        await Task.Delay(_random.Next(800, 1500));
+        await WaitForNavigationAsync(page, beforeClickUrl);
 
         int minSequence = Math.Max(1, warmup.MinShortSequenceLength);
         int maxSequence = Math.Max(minSequence, warmup.MaxShortSequenceLength);
@@ -705,10 +709,11 @@ internal class YouTubeWarmupService
         var page = await EnsurePageAsync();
         try
         {
+            string previousUrl = page.Url;
             if (_random.NextDouble() < 0.55)
             {
                 await page.Keyboard.PressAsync("ArrowDown");
-                await Task.Delay(_random.Next(600, 1000));
+                await WaitForNavigationAsync(page, previousUrl);
                 return true;
             }
 
@@ -716,7 +721,7 @@ internal class YouTubeWarmupService
             if (await nextButton.CountAsync() > 0 && await nextButton.First.IsEnabledAsync())
             {
                 await _mouseHelper!.MoveAndClickAsync(nextButton.First);
-                await Task.Delay(_random.Next(600, 1000));
+                await WaitForNavigationAsync(page, previousUrl);
                 return true;
             }
         }
@@ -842,7 +847,7 @@ internal class YouTubeWarmupService
         return finalPercent;
     }
 
-    private async Task<VideoWatchResult?> WatchVideoAsync(
+    private async Task<VideoWatchResult?> WatchCurrentEntryAsync(
         YouTubeWarmupSettings warmup,
         string context,
         string method,
@@ -853,15 +858,51 @@ internal class YouTubeWarmupService
         VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
+        var kind = YouTubeUrlHelper.GetVideoKind(page.Url);
+
+        return kind == YouTubeUrlHelper.YouTubeVideoKind.Short
+            ? await WatchShortAsync(
+                warmup,
+                context,
+                method,
+                contextDetail,
+                entryPoint,
+                position,
+                parent)
+            : await WatchVideoAsync(
+                warmup,
+                context,
+                method,
+                contextDetail,
+                entryPoint,
+                keyword,
+                position,
+                parent,
+                kind);
+    }
+
+    private async Task<VideoWatchResult?> WatchVideoAsync(
+        YouTubeWarmupSettings warmup,
+        string context,
+        string method,
+        string contextDetail,
+        string entryPoint,
+        string? keyword,
+        int? position,
+        VideoWatchResult? parent,
+        YouTubeUrlHelper.YouTubeVideoKind detectedKind)
+    {
+        var page = await EnsurePageAsync();
         try
         {
-            await page.WaitForSelectorAsync("ytd-player video", new PageWaitForSelectorOptions { Timeout = 20000 });
+            await WaitForStandardPlayerAsync(page);
         }
         catch
         {
             _logger?.LogWarning("Video element did not appear for context {Context}.", context);
         }
 
+        await FocusPlayerAsync(page, detectedKind);
         await MaybeSkipAdsAsync(page);
 
         int? volumePercent = await MaybeAdjustVolumeAsync(page);
@@ -963,6 +1004,8 @@ internal class YouTubeWarmupService
         VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
+        await WaitForShortPlayerAsync(page);
+        await FocusPlayerAsync(page, YouTubeUrlHelper.YouTubeVideoKind.Short);
         await MaybeSkipAdsAsync(page);
 
         int? volumePercent = await MaybeAdjustVolumeAsync(page);
@@ -1008,6 +1051,104 @@ internal class YouTubeWarmupService
         return result;
     }
 
+    private async Task WaitForNavigationAsync(IPage page, string previousUrl)
+    {
+        try
+        {
+            for (int attempt = 0; attempt < 40; attempt++)
+            {
+                if (!string.Equals(page.Url, previousUrl, StringComparison.OrdinalIgnoreCase))
+                {
+                    break;
+                }
+
+                await Task.Delay(250);
+            }
+
+            await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
+            await Task.Delay(_random.Next(900, 1800));
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Navigation wait encountered an issue.");
+        }
+    }
+
+    private static async Task WaitForStandardPlayerAsync(IPage page)
+    {
+        try
+        {
+            await page.WaitForSelectorAsync(
+                "video.html5-main-video, ytd-player video",
+                new PageWaitForSelectorOptions { Timeout = 20000 });
+        }
+        catch
+        {
+            // ignore and let caller handle missing player
+        }
+    }
+
+    private static async Task WaitForShortPlayerAsync(IPage page)
+    {
+        try
+        {
+            await page.WaitForSelectorAsync(
+                "#shorts-player video, ytd-reel-video-renderer video, ytd-shorts-player-renderer video",
+                new PageWaitForSelectorOptions { Timeout = 20000 });
+        }
+        catch
+        {
+            // best effort
+        }
+    }
+
+    private async Task FocusPlayerAsync(IPage page, YouTubeUrlHelper.YouTubeVideoKind kind)
+    {
+        try
+        {
+            string[] selectors = kind == YouTubeUrlHelper.YouTubeVideoKind.Short
+                ? new[]
+                {
+                    "#shorts-player video",
+                    "#shorts-player",
+                    "ytd-reel-video-renderer video"
+                }
+                : new[]
+                {
+                    "video.html5-main-video",
+                    "ytd-player video",
+                    "#movie_player"
+                };
+
+            foreach (string selector in selectors)
+            {
+                var locator = page.Locator(selector);
+                if (await locator.CountAsync() == 0)
+                {
+                    continue;
+                }
+
+                var element = locator.First;
+                if (!await element.IsVisibleAsync())
+                {
+                    continue;
+                }
+
+                await element.FocusAsync();
+                if (_mouseHelper != null)
+                {
+                    await _mouseHelper.MoveToAsync(element, steps: 12, addJitter: true);
+                }
+
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to focus YouTube player.");
+        }
+    }
+
     private async Task MaybeChainRecommendedVideosAsync(YouTubeWarmupSettings warmup, VideoWatchResult initialResult)
     {
         double probability = Math.Clamp(warmup.RecommendationChainProbability, 0, 1);
@@ -1029,6 +1170,35 @@ internal class YouTubeWarmupService
         var parent = initialResult;
         for (int i = 0; i < chainCount; i++)
         {
+            if (parent.VideoType == YouTubeUrlHelper.YouTubeVideoKind.Short)
+            {
+                if (!await TryNavigateShortContinuationAsync(page))
+                {
+                    break;
+                }
+
+                string beforeShortUrl = parent.Url ?? page.Url;
+                await WaitForNavigationAsync(page, beforeShortUrl);
+
+                var shortResult = await WatchCurrentEntryAsync(
+                    warmup,
+                    context: "RecommendationNext",
+                    method: "ShortsNavigation",
+                    contextDetail: $"ShortsChain#{i + 1}",
+                    entryPoint: parent.EntryPoint ?? "Recommendation",
+                    keyword: null,
+                    position: null,
+                    parent: parent);
+
+                if (shortResult == null)
+                {
+                    break;
+                }
+
+                parent = shortResult;
+                continue;
+            }
+
             string previousUrl = page.Url;
             bool useAutoplay = i == 0 && _random.NextDouble() < Math.Clamp(warmup.AutoplayFollowProbability, 0, 1);
             bool navigated;
@@ -1061,16 +1231,7 @@ internal class YouTubeWarmupService
                 break;
             }
 
-            try
-            {
-                await page.WaitForLoadStateAsync(LoadState.DOMContentLoaded);
-            }
-            catch (TimeoutException)
-            {
-                _logger?.LogWarning("Timed out waiting for recommended video to load.");
-            }
-
-            await Task.Delay(_random.Next(1000, 2200));
+            await WaitForNavigationAsync(page, previousUrl);
 
             if (string.Equals(previousUrl, page.Url, StringComparison.OrdinalIgnoreCase))
             {
@@ -1080,12 +1241,12 @@ internal class YouTubeWarmupService
 
             string recommendationContext = "RecommendationNext";
 
-            var result = await WatchVideoAsync(
+            var result = await WatchCurrentEntryAsync(
                 warmup,
                 context: recommendationContext,
                 method: method,
                 contextDetail: contextDetail,
-                entryPoint: parent.EntryPoint,
+                entryPoint: parent.EntryPoint ?? "Recommendation",
                 keyword: null,
                 position: position,
                 parent: parent);
@@ -1096,6 +1257,38 @@ internal class YouTubeWarmupService
 
             parent = result;
         }
+    }
+
+    private async Task<bool> TryNavigateShortContinuationAsync(IPage page)
+    {
+        try
+        {
+            string previousUrl = page.Url;
+            var downButton = page.Locator("#navigation-button-down button, #navigation-button-down tp-yt-paper-button, #navigation-button-down");
+            if (await downButton.CountAsync() > 0 && await downButton.First.IsVisibleAsync())
+            {
+                await _mouseHelper!.MoveAndClickAsync(downButton.First);
+            }
+            else
+            {
+                await page.Keyboard.PressAsync("ArrowDown");
+            }
+
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(400);
+                if (!string.Equals(previousUrl, page.Url, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed to navigate to next short during recommendation chain.");
+        }
+
+        return false;
     }
 
     private async Task<bool> TriggerAutoplayAsync(IPage page)
@@ -1133,6 +1326,45 @@ internal class YouTubeWarmupService
     {
         try
         {
+            bool adDetected = false;
+            int? detectedDurationMs = null;
+
+            for (int attempt = 0; attempt < 12; attempt++)
+            {
+                adDetected = await page.EvaluateAsync<bool>(
+                    "() => document.querySelector('.ad-showing, .ytp-ad-player-overlay, .ytp-ad-overlay-slot') !== null");
+                if (adDetected)
+                {
+                    string? durationText = await page.EvaluateAsync<string?>(
+                        "() => document.querySelector('.ytp-ad-duration-remaining .ytp-time-duration, .ytp-ad-duration-remaining')?.textContent ?? null");
+                    detectedDurationMs = ParseDurationToMilliseconds(durationText);
+                    break;
+                }
+
+                await Task.Delay(350);
+            }
+
+            if (!adDetected)
+            {
+                return;
+            }
+
+            int dwellMs;
+            if (detectedDurationMs.HasValue && detectedDurationMs.Value <= 15000)
+            {
+                dwellMs = _random.Next(5000, 8000);
+            }
+            else if (detectedDurationMs.HasValue && detectedDurationMs.Value <= 30000)
+            {
+                dwellMs = _random.Next(5000, 15000);
+            }
+            else
+            {
+                dwellMs = _random.Next(6000, 16000);
+            }
+
+            await Task.Delay(dwellMs);
+
             var skipSelectors = new[]
             {
                 "button.ytp-ad-skip-button", // primary skip button
@@ -1145,6 +1377,13 @@ internal class YouTubeWarmupService
 
             for (int attempt = 0; attempt < 6; attempt++)
             {
+                bool stillShowing = await page.EvaluateAsync<bool>(
+                    "() => document.querySelector('.ad-showing, .ytp-ad-player-overlay, .ytp-ad-overlay-slot') !== null");
+                if (!stillShowing)
+                {
+                    return;
+                }
+
                 foreach (string selector in skipSelectors)
                 {
                     var skipButton = page.Locator(selector);
@@ -1180,6 +1419,37 @@ internal class YouTubeWarmupService
         {
             _logger?.LogDebug(ex, "Failed while attempting to skip YouTube ads.");
         }
+    }
+
+    private static int? ParseDurationToMilliseconds(string? durationText)
+    {
+        if (string.IsNullOrWhiteSpace(durationText))
+        {
+            return null;
+        }
+
+        durationText = durationText.Trim();
+        var parts = durationText.Split(':', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+        {
+            return null;
+        }
+
+        int seconds = 0;
+        int multiplier = 1;
+
+        for (int i = parts.Length - 1; i >= 0; i--)
+        {
+            if (!int.TryParse(parts[i], out int value))
+            {
+                return null;
+            }
+
+            seconds += value * multiplier;
+            multiplier *= 60;
+        }
+
+        return seconds * 1000;
     }
 
     private async Task<int?> OpenRecommendedSidebarVideoAsync(IPage page)
