@@ -780,6 +780,8 @@ internal class YouTubeWarmupService
             _logger?.LogWarning("Video element did not appear for context {Context}.", context);
         }
 
+        await MaybeSkipAdsAsync(page);
+
         int? volumePercent = await MaybeAdjustVolumeAsync(page);
         int planned = PlanWatchDuration(warmup.MinWatchMilliseconds, warmup.MaxWatchMilliseconds);
         int actualTarget = ApplyWatchDurationJitter(planned, warmup.MinWatchMilliseconds, warmup.MaxWatchMilliseconds);
@@ -872,6 +874,8 @@ internal class YouTubeWarmupService
         VideoWatchResult? parent)
     {
         var page = await EnsurePageAsync();
+        await MaybeSkipAdsAsync(page);
+
         int? volumePercent = await MaybeAdjustVolumeAsync(page);
         int planned = PlanWatchDuration(warmup.MinShortWatchMilliseconds, warmup.MaxShortWatchMilliseconds);
         int actualTarget = ApplyWatchDurationJitter(planned, warmup.MinShortWatchMilliseconds, warmup.MaxShortWatchMilliseconds);
@@ -1036,11 +1040,67 @@ internal class YouTubeWarmupService
         }
     }
 
+    private async Task MaybeSkipAdsAsync(IPage page)
+    {
+        try
+        {
+            var skipSelectors = new[]
+            {
+                "button.ytp-ad-skip-button", // primary skip button
+                ".ytp-ad-skip-button.ytp-button", // legacy skip button style
+                "button.ytp-ad-skip-button-modern", // new UI variant
+                ".ytp-ad-overlay-close-button", // overlay ads
+                "button[aria-label*='Skip'], button[aria-label*='skip']",
+                "#skip-button .ytp-button"
+            };
+
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                foreach (string selector in skipSelectors)
+                {
+                    var skipButton = page.Locator(selector);
+                    if (await skipButton.CountAsync() == 0)
+                    {
+                        continue;
+                    }
+
+                    var target = skipButton.First;
+                    if (!await target.IsVisibleAsync())
+                    {
+                        continue;
+                    }
+
+                    _logger?.LogDebug("Attempting to skip YouTube ad using selector {Selector}.", selector);
+                    if (_mouseHelper != null)
+                    {
+                        await _mouseHelper.MoveAndClickAsync(target);
+                    }
+                    else
+                    {
+                        await target.ClickAsync(new LocatorClickOptions { Timeout = 2000 });
+                    }
+
+                    await Task.Delay(_random.Next(600, 1200));
+                    return;
+                }
+
+                await Task.Delay(_random.Next(500, 900));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogDebug(ex, "Failed while attempting to skip YouTube ads.");
+        }
+    }
+
     private async Task<int?> OpenRecommendedSidebarVideoAsync(IPage page)
     {
         try
         {
-            var recTiles = page.Locator("ytd-compact-video-renderer a#thumbnail, ytd-watch-next-secondary-results-renderer a#thumbnail");
+            var recTiles = page.Locator(
+                "#items > yt-lockup-view-model a#thumbnail, " +
+                "ytd-compact-video-renderer a#thumbnail, " +
+                "ytd-watch-next-secondary-results-renderer a#thumbnail");
             int count = await recTiles.CountAsync();
             if (count == 0)
             {
