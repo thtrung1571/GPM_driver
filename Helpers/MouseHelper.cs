@@ -17,6 +17,8 @@ namespace GPM_driver.Helpers
         public int MinClickDelay { get; set; } = 120;
         public int MaxClickDelay { get; set; } = 500;
 
+        public IPage Page => _page;
+
         public MouseHelper(IPage page)
         {
             _page = page;
