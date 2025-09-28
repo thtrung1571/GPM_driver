@@ -100,9 +100,10 @@ internal class PlayerControlHelper
                 return false;
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             return await player.EvaluateAsync<bool>(
-                "player => Boolean(player?.classList?.contains('ad-showing') || player?.classList?.contains('ad-interrupting'))",
-                cancellationToken: cancellationToken);
+                "player => Boolean(player?.classList?.contains('ad-showing') || player?.classList?.contains('ad-interrupting'))");
         }
         catch (PlaywrightException)
         {
@@ -180,10 +181,11 @@ internal class PlayerControlHelper
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             return await _page.EvaluateAsync<bool>(
                 "delta => {\n                    const video = document.querySelector('video.html5-main-video');\n                    if (!video || !isFinite(video.duration) || video.duration <= 0) {\n                        return false;\n                    }\n                    const normalized = Math.min(0.995, Math.max(0.005, (video.currentTime / video.duration) + delta));\n                    const newTime = video.duration * normalized;\n                    if (Math.abs(newTime - video.currentTime) < 0.25) {\n                        return false;\n                    }\n                    video.currentTime = newTime;\n                    return true;\n                }",
-                percentageDelta,
-                cancellationToken: cancellationToken);
+                percentageDelta);
         }
         catch (PlaywrightException ex)
         {
@@ -209,10 +211,11 @@ internal class PlayerControlHelper
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             return await _page.EvaluateAsync<bool>(
                 "speed => {\n                    const video = document.querySelector('video.html5-main-video');\n                    if (!video) {\n                        return false;\n                    }\n                    if (Math.abs(video.playbackRate - speed) < 0.01) {\n                        const alternatives = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];\n                        const different = alternatives.find(s => Math.abs(s - video.playbackRate) > 0.01);\n                        if (different) {\n                            video.playbackRate = different;\n                            return true;\n                        }\n                        return false;\n                    }\n                    video.playbackRate = speed;\n                    return true;\n                }",
-                target,
-                cancellationToken: cancellationToken);
+                target);
         }
         catch (PlaywrightException ex)
         {
@@ -242,9 +245,10 @@ internal class PlayerControlHelper
     {
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             return await _page.EvaluateAsync<bool>(
-                "() => {\n                    const video = document.querySelector('video.html5-main-video');\n                    if (!video) return false;\n                    if (video.paused) {\n                        video.play();\n                        return false;\n                    }\n                    return true;\n                }",
-                cancellationToken: cancellationToken);
+                "() => {\n                    const video = document.querySelector('video.html5-main-video');\n                    if (!video) return false;\n                    if (video.paused) {\n                        video.play();\n                        return false;\n                    }\n                    return true;\n                }");
         }
         catch (PlaywrightException)
         {

@@ -167,8 +167,8 @@ internal class YouTubeWarmupService
 
         double searchWeight = freshLanding ? 0.7 : Math.Max(0.05, config.SearchWeight);
         double shortsWeight = freshLanding ? 0.3 : Math.Max(0.01, config.ShortsWeight);
-        double homeWeight = freshLanding ? 0.0 : 0.35;
-        double recommendationWeight = freshLanding ? 0.0 : 0.25;
+        double homeWeight = freshLanding ? 0.0 : Math.Max(0.01, config.HomeWeight);
+        double recommendationWeight = freshLanding ? 0.0 : Math.Max(0.01, config.RecommendationsWeight);
 
         double total = 0;
         var bag = new List<(WarmupBehaviour Behaviour, double Weight)>();
