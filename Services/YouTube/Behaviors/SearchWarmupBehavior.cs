@@ -47,7 +47,7 @@ internal sealed class SearchWarmupBehavior : IYouTubeWarmupBehavior
 
         await context.NavigateToHomeAsync(config, token);
 
-        var searchInput = page.Locator("input#search");
+        var searchInput = page.Locator("input[name='search_query']");
         if (!await searchInput.IsVisibleAsync(new() { Timeout = 3000 }))
         {
             _logger?.LogDebug("Search input not visible; attempting keyboard shortcut.");
@@ -77,7 +77,7 @@ internal sealed class SearchWarmupBehavior : IYouTubeWarmupBehavior
 
         if (context.Random.NextDouble() < 0.2)
         {
-            var searchButton = page.Locator("button#search-icon-legacy");
+            var searchButton = page.Locator("button[class='ytSearchboxComponentSearchButton']");
             if (await searchButton.IsVisibleAsync(new() { Timeout = 1500 }))
             {
                 await mouse.MoveAndClickAsync(searchButton);

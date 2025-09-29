@@ -36,10 +36,22 @@ internal class PlayerControlHelper
 
     public async Task<bool> EnsurePlayerVisibleAsync()
     {
-        var video = _page.Locator("video.html5-main-video");
         try
         {
-            return await video.IsVisibleAsync(new() { Timeout = 5000 });
+            var standardPlayer = _page.Locator("#movie_player");
+            if (await standardPlayer.IsVisibleAsync(new() { Timeout = 5000 }))
+            {
+                return true;
+            }
+
+            var shortsPlayer = _page.Locator("#reel-video-renderer");
+            if (await shortsPlayer.IsVisibleAsync(new() { Timeout = 2000 }))
+            {
+                return true;
+            }
+
+            var video = _page.Locator("video.html5-main-video");
+            return await video.IsVisibleAsync(new() { Timeout = 2000 });
         }
         catch
         {
