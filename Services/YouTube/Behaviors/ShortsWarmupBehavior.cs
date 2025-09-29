@@ -86,29 +86,65 @@ internal sealed class ShortsWarmupBehavior : IYouTubeWarmupBehavior
             return false;
         }
 
-        try
+        var navigationSelectors = new[]
         {
-            var menuItems = page.Locator("#items ytd-mini-guide-entry-renderer");
-            int count = await menuItems.CountAsync();
-            for (int i = 0; i < Math.Min(count, 8); i++)
+            "#items ytd-mini-guide-entry-renderer[aria-label*='Shorts' i]",
+            "#items ytd-mini-guide-entry-renderer:has-text('Shorts')",
+            "ytd-guide-entry-renderer[aria-label*='Shorts' i] a",
+            "a[title*='Shorts' i]",
+            "a[aria-label*='Shorts' i]",
+            "#endpoint[href^='/shorts']"
+        };
+
+        foreach (string selector in navigationSelectors)
+        {
+            try
             {
-                var entry = menuItems.Nth(i);
-                string label = (await entry.InnerTextAsync(new() { Timeout = 1000 }))?.Trim() ?? string.Empty;
-                if (label.IndexOf("shorts", StringComparison.OrdinalIgnoreCase) >= 0)
+                var candidates = page.Locator(selector);
+                int count = await candidates.CountAsync();
+                for (int i = 0; i < Math.Min(count, 5); i++)
                 {
-                    await mouse.MoveAndClickAsync(entry);
-                    await context.WaitForNavigationAsync(token);
-                    return true;
+                    var entry = candidates.Nth(i);
+                    if (!await entry.IsVisibleAsync(new() { Timeout = 1000 }))
+                    {
+                        continue;
+                    }
+
+                    try
+                    {
+                        await entry.ScrollIntoViewIfNeededAsync();
+                    }
+                    catch (PlaywrightException)
+                    {
+                        // Continue even if scrolling fails; clicking may still succeed.
+                    }
+
+                    try
+                    {
+                        await mouse.MoveAndClickAsync(entry);
+                        await context.WaitForNavigationAsync(token);
+
+                        if (page.Url.Contains("/shorts", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return true;
+                        }
+                    }
+                    catch (PlaywrightException ex)
+                    {
+                        _logger?.LogDebug(ex, "Failed to activate Shorts via selector {Selector}.", selector);
+                    }
                 }
             }
-        }
-        catch (PlaywrightException ex)
-        {
-            _logger?.LogDebug(ex, "Mini guide navigation to Shorts failed; falling back to direct navigation.");
+            catch (PlaywrightException ex)
+            {
+                _logger?.LogTrace(ex, "Selector {Selector} lookup failed while opening Shorts feed.", selector);
+            }
         }
 
         string fallback = config.Domains?.FirstOrDefault(d => d.Contains("/shorts", StringComparison.OrdinalIgnoreCase))
             ?? "https://www.youtube.com/shorts";
+
+        _logger?.LogDebug("Falling back to direct Shorts navigation at {Url}.", fallback);
 
         try
         {
@@ -134,15 +170,26 @@ internal sealed class ShortsWarmupBehavior : IYouTubeWarmupBehavior
         try
         {
             token.ThrowIfCancellationRequested();
-            var player = page.Locator("#shorts-player video, #reel-video-renderer video, video.html5-main-video");
-            await player.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+
+            var container = page.Locator("#shorts-player, #reel-video-renderer");
+            if (await container.CountAsync() == 0)
+            {
+                _logger?.LogDebug("Shorts container elements not found after navigation.");
+                return false;
+            }
+
+            await container.First.WaitForAsync(new()
+            {
+                State = WaitForSelectorState.Visible,
+                Timeout = 12000
+            });
         }
         catch (PlaywrightException ex)
         {
-            _logger?.LogDebug(ex, "Shorts player did not become visible in time.");
+            _logger?.LogDebug(ex, "Shorts container did not become visible in time.");
             return false;
         }
 
-        return await context.PlayerControls.WaitForPlayerReadyAsync(token, 12000);
+        return await context.PlayerControls.WaitForPlayerReadyAsync(token, 15000);
     }
 }
