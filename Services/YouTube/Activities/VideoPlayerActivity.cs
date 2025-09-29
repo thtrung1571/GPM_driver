@@ -33,7 +33,8 @@ internal class VideoPlayerActivity
 
     public async Task WatchCurrentVideoAsync(
         TimeSpan watchDuration,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool? treatAsShortHint = null)
     {
         if (watchDuration <= TimeSpan.Zero)
         {
@@ -55,7 +56,25 @@ internal class VideoPlayerActivity
             return;
         }
 
-        var stopAt = DateTime.UtcNow + watchDuration;
+        var metadata = await _controls.TryGetPlaybackMetadataAsync(cancellationToken);
+        bool treatAsShort = treatAsShortHint ?? metadata?.IsShort ?? false;
+        TimeSpan effectiveDuration = DetermineEffectiveWatchDuration(watchDuration, metadata, treatAsShort);
+
+        if (effectiveDuration <= TimeSpan.Zero)
+        {
+            _logger?.LogWarning("Resolved non-positive watch duration for current video. Skipping warmup interaction.");
+            return;
+        }
+
+        if (effectiveDuration < watchDuration - TimeSpan.FromSeconds(1))
+        {
+            _logger?.LogInformation(
+                "Adjusting watch duration from {Requested} to {Actual} based on playback metadata.",
+                watchDuration,
+                effectiveDuration);
+        }
+
+        var stopAt = DateTime.UtcNow + effectiveDuration;
         bool firstLoop = true;
         int actionsPerformed = 0;
         int maxInteractions = DetermineMaxInteractionsPerVideo();
@@ -121,6 +140,75 @@ internal class VideoPlayerActivity
 
         await _controls.ExitFullScreenAsync(cancellationToken);
         _logger?.LogInformation("Completed watch routine on {Url}.", _page.Url);
+    }
+
+    private TimeSpan DetermineEffectiveWatchDuration(
+        TimeSpan requestedDuration,
+        PlayerControlHelper.VideoPlaybackMetadata? metadata,
+        bool treatAsShort)
+    {
+        if (metadata?.Duration is not TimeSpan totalDuration || totalDuration <= TimeSpan.Zero)
+        {
+            return requestedDuration;
+        }
+
+        double totalSeconds = totalDuration.TotalSeconds;
+        double currentSeconds = metadata.Position?.TotalSeconds ?? 0;
+        if (currentSeconds < 0 || currentSeconds > totalSeconds)
+        {
+            currentSeconds = 0;
+        }
+
+        double remainingSeconds = Math.Max(0, totalSeconds - currentSeconds);
+        if (remainingSeconds <= 1)
+        {
+            remainingSeconds = Math.Max(1, totalSeconds * 0.2);
+        }
+
+        double ratio = ChooseWatchRatio(totalDuration, treatAsShort);
+        double targetSeconds = Math.Min(remainingSeconds, totalSeconds * ratio);
+        targetSeconds = Math.Max(3, targetSeconds);
+
+        double requestedSeconds = Math.Max(1, requestedDuration.TotalSeconds);
+        double effectiveSeconds = Math.Min(requestedSeconds, targetSeconds);
+        effectiveSeconds = Math.Min(effectiveSeconds, remainingSeconds);
+
+        if (effectiveSeconds <= 1)
+        {
+            effectiveSeconds = Math.Min(remainingSeconds, Math.Max(3, Math.Min(requestedSeconds, totalSeconds)));
+        }
+
+        return TimeSpan.FromSeconds(effectiveSeconds);
+    }
+
+    private double ChooseWatchRatio(TimeSpan totalDuration, bool treatAsShort)
+    {
+        if (treatAsShort || totalDuration <= TimeSpan.FromSeconds(90))
+        {
+            return RandomRange(0.75, 0.97);
+        }
+
+        if (totalDuration <= TimeSpan.FromMinutes(5))
+        {
+            return RandomRange(0.45, 0.8);
+        }
+
+        if (totalDuration <= TimeSpan.FromMinutes(15))
+        {
+            return RandomRange(0.3, 0.6);
+        }
+
+        return RandomRange(0.15, 0.4);
+    }
+
+    private double RandomRange(double minInclusive, double maxInclusive)
+    {
+        if (maxInclusive <= minInclusive)
+        {
+            return minInclusive;
+        }
+
+        return minInclusive + (_random.NextDouble() * (maxInclusive - minInclusive));
     }
 
     private int ComputeNextDelay()

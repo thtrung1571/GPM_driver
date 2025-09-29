@@ -93,7 +93,7 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
             return false;
         }
 
-        var items = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer a#thumbnail, ytd-rich-item-renderer #video-title-link");
+        var items = page.Locator("ytd-rich-item-renderer");
         int count = await items.CountAsync();
         if (count == 0)
         {
@@ -106,7 +106,16 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
         try
         {
             await item.ScrollIntoViewIfNeededAsync();
-            await mouse.MoveAndClickAsync(item);
+            var anchors = item.Locator("a#thumbnail, #video-title-link, a.yt-simple-endpoint");
+            if (await anchors.CountAsync() == 0)
+            {
+                _logger?.LogDebug("No clickable anchor found within home grid item at index {Index}.", index);
+                return false;
+            }
+
+            var clickable = anchors.First;
+            await clickable.ScrollIntoViewIfNeededAsync();
+            await mouse.MoveAndClickAsync(clickable);
             await context.WaitForNavigationAsync(token);
         }
         catch (PlaywrightException ex)
@@ -134,7 +143,7 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
             return;
         }
 
-        var recommendations = page.Locator("#items ytd-compact-video-renderer a#thumbnail, #secondary ytd-compact-video-renderer #video-title");
+        var recommendations = page.Locator("#items > yt-lockup-view-model, #secondary yt-lockup-view-model");
         int count = await recommendations.CountAsync();
         if (count == 0)
         {
@@ -148,7 +157,16 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
         try
         {
             await recommendation.ScrollIntoViewIfNeededAsync();
-            await mouse.MoveAndClickAsync(recommendation);
+            var anchors = recommendation.Locator("a#thumbnail, a#video-title-link, a.yt-simple-endpoint");
+            if (await anchors.CountAsync() == 0)
+            {
+                _logger?.LogDebug("No clickable anchor found within recommendation at index {Index}.", index);
+                return;
+            }
+
+            var clickable = anchors.First;
+            await clickable.ScrollIntoViewIfNeededAsync();
+            await mouse.MoveAndClickAsync(clickable);
             await context.WaitForNavigationAsync(token);
         }
         catch (PlaywrightException ex)
@@ -162,7 +180,9 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
         try
         {
             token.ThrowIfCancellationRequested();
-            var gridItems = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer");
+            var contents = page.Locator("#contents");
+            await contents.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+            var gridItems = contents.Locator("ytd-rich-item-renderer");
             await gridItems.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
             return true;
         }
@@ -178,7 +198,7 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
         try
         {
             token.ThrowIfCancellationRequested();
-            var panelItems = page.Locator("#items ytd-compact-video-renderer, #secondary ytd-compact-video-renderer");
+            var panelItems = page.Locator("#items > yt-lockup-view-model, #secondary yt-lockup-view-model");
             await panelItems.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
             return true;
         }

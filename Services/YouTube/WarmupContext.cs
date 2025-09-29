@@ -245,7 +245,7 @@ internal sealed class WarmupContext
 
         try
         {
-            await activity.WatchCurrentVideoAsync(duration, token);
+            await activity.WatchCurrentVideoAsync(duration, token, isShort ? true : null);
         }
         catch (PlaywrightException ex)
         {

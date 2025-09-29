@@ -87,6 +87,64 @@ internal class PlayerControlHelper
         }
     }
 
+    public async Task<VideoPlaybackMetadata?> TryGetPlaybackMetadataAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        try
+        {
+            var result = await _page.EvaluateAsync<VideoMetadataResult?>(
+                @"() => {
+                    const video = document.querySelector('video.html5-main-video')
+                        || document.querySelector('#shorts-player video')
+                        || document.querySelector('#reel-video-renderer video');
+                    if (!video) {
+                        return null;
+                    }
+
+                    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : null;
+                    const current = Number.isFinite(video.currentTime) && video.currentTime >= 0 ? video.currentTime : null;
+                    const isShort = Boolean(document.location?.pathname?.startsWith('/shorts'))
+                        || Boolean(document.querySelector('#shorts-player, #reel-video-renderer'));
+
+                    return {
+                        DurationSeconds: duration,
+                        CurrentSeconds: current,
+                        IsShort: isShort
+                    };
+                }");
+
+            if (result == null)
+            {
+                return null;
+            }
+
+            TimeSpan? duration = result.DurationSeconds is double durationSeconds
+                ? TimeSpan.FromSeconds(Math.Max(0, durationSeconds))
+                : null;
+            TimeSpan? position = result.CurrentSeconds is double currentSeconds
+                ? TimeSpan.FromSeconds(Math.Max(0, currentSeconds))
+                : null;
+
+            if (duration is TimeSpan total && double.IsInfinity(total.TotalSeconds))
+            {
+                duration = null;
+            }
+
+            return new VideoPlaybackMetadata
+            {
+                Duration = duration,
+                Position = position,
+                IsShort = result.IsShort
+            };
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogTrace(ex, "Unable to query YouTube playback metadata.");
+            return null;
+        }
+    }
+
     public async Task<bool> WaitForPlayerReadyAsync(CancellationToken cancellationToken, int timeoutMilliseconds = 15000)
     {
         DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(1000, timeoutMilliseconds));
@@ -430,5 +488,38 @@ internal class PlayerControlHelper
             default:
                 return false;
         }
+    }
+
+    internal sealed class VideoPlaybackMetadata
+    {
+        public TimeSpan? Duration { get; init; }
+
+        public TimeSpan? Position { get; init; }
+
+        public bool IsShort { get; init; }
+
+        public TimeSpan? Remaining
+        {
+            get
+            {
+                if (Duration is not TimeSpan total)
+                {
+                    return null;
+                }
+
+                double currentSeconds = Math.Max(0, Position?.TotalSeconds ?? 0);
+                double remainingSeconds = Math.Max(0, total.TotalSeconds - currentSeconds);
+                return TimeSpan.FromSeconds(remainingSeconds);
+            }
+        }
+    }
+
+    private sealed class VideoMetadataResult
+    {
+        public double? DurationSeconds { get; set; }
+
+        public double? CurrentSeconds { get; set; }
+
+        public bool IsShort { get; set; }
     }
 }
