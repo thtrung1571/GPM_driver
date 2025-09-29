@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using GPM_driver.Behaviors;
 using GPM_driver.Helpers;
 using GPM_driver.Models;
+using GPM_driver.Services.YouTube.Behaviors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 
@@ -190,7 +191,16 @@ internal class WarmupSession
         }
 
         var ytLogger = _loggerFactory.CreateLogger<YouTubeWarmupService>();
-        var youtubeWarmup = new YouTubeWarmupService(_context, ytLogger);
+        var behaviors = new IYouTubeWarmupBehavior[]
+        {
+            new SearchWarmupBehavior(_loggerFactory.CreateLogger<SearchWarmupBehavior>()),
+            new HomeWarmupBehavior(_loggerFactory.CreateLogger<HomeWarmupBehavior>()),
+            new ShortsWarmupBehavior(_loggerFactory.CreateLogger<ShortsWarmupBehavior>()),
+            new RecommendationWarmupBehavior(_loggerFactory.CreateLogger<RecommendationWarmupBehavior>())
+        };
+
+        var weightCalculator = new BehaviorWeightCalculator(_loggerFactory.CreateLogger<BehaviorWeightCalculator>());
+        var youtubeWarmup = new YouTubeWarmupService(_context, behaviors, weightCalculator, ytLogger, _loggerFactory);
 
         try
         {

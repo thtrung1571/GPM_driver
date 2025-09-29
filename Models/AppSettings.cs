@@ -62,30 +62,24 @@ public class YouTubeWarmupSettings
     public bool Enabled { get; set; } = true;
     public int MinInteractions { get; set; } = 2;
     public int MaxInteractions { get; set; } = 5;
-    public double ContinueProbability { get; set; } = 0.35;
     public int MinWatchMilliseconds { get; set; } = 20000;
     public int MaxWatchMilliseconds { get; set; } = 55000;
     public int MinShortWatchMilliseconds { get; set; } = 8000;
     public int MaxShortWatchMilliseconds { get; set; } = 20000;
     public double SearchWeight { get; set; } = 0.5;
     public double ShortsWeight { get; set; } = 0.25;
+    public double HomeWeight { get; set; } = 0.35;
+    public double RecommendationsWeight { get; set; } = 0.25;
     public int MinDelayBetweenActionsMs { get; set; } = 2000;
     public int MaxDelayBetweenActionsMs { get; set; } = 5000;
     public string[] Domains { get; set; } = new[] { "https://www.youtube.com", "https://www.youtube.com/feed/explore" };
     public string IdentityCacheDirectory { get; set; } = "youtube-identities";
-    public int IdentityKeywordFileCount { get; set; } = 2;
-    public double RecommendationChainProbability { get; set; } = 0.55;
     public int MinRecommendationChainLength { get; set; } = 1;
     public int MaxRecommendationChainLength { get; set; } = 3;
     public int MaxRecommendationDepth { get; set; } = 3;
     public double AutoplayFollowProbability { get; set; } = 0.35;
     public int MinShortSequenceLength { get; set; } = 2;
     public int MaxShortSequenceLength { get; set; } = 5;
-    public string Persona { get; set; } = "Generalist";
-    public string Region { get; set; } = "Global";
-    public string Language { get; set; } = "en-US";
-    public string? Timezone { get; set; }
-        = null;
     public string[] Behaviors { get; set; }
         = new[] { "Search", "Home", "Shorts", "Recommendations" };
 }
