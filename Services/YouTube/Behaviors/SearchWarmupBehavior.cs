@@ -94,21 +94,33 @@ internal sealed class SearchWarmupBehavior : IYouTubeWarmupBehavior
 
         await context.WaitForNavigationAsync(token);
 
-        var results = page.Locator("ytd-video-renderer a#thumbnail, ytd-video-renderer #video-title-link");
-        if (!await results.First.IsVisibleAsync(new() { Timeout = 7000 }))
+        if (!await WaitForSearchResultsAsync(page, token))
         {
             _logger?.LogWarning("No visible search results located for keyword '{Keyword}'.", keyword);
             return false;
         }
 
+        var results = page.Locator("ytd-video-renderer a#thumbnail, ytd-video-renderer #video-title-link");
         int count = await page.Locator("ytd-video-renderer").CountAsync();
         int index = context.Random.Next(0, Math.Min(count, 5));
         var target = results.Nth(index);
 
         try
         {
+            await target.ScrollIntoViewIfNeededAsync();
             await mouse.MoveAndClickAsync(target);
             await context.WaitForNavigationAsync(token);
+            try
+            {
+                await page.WaitForURLAsync(
+                    url => url.Contains("watch", StringComparison.OrdinalIgnoreCase)
+                        || url.Contains("/shorts/", StringComparison.OrdinalIgnoreCase),
+                    new() { Timeout = 15000 });
+            }
+            catch (PlaywrightException ex)
+            {
+                _logger?.LogDebug(ex, "URL wait after opening search result timed out.");
+            }
         }
         catch (PlaywrightException ex)
         {
@@ -130,6 +142,22 @@ internal sealed class SearchWarmupBehavior : IYouTubeWarmupBehavior
         }
 
         return _cachedKeywords[context.Random.Next(_cachedKeywords.Count)];
+    }
+
+    private async Task<bool> WaitForSearchResultsAsync(IPage page, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var results = page.Locator("ytd-video-renderer");
+            await results.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+            return true;
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogDebug(ex, "Waiting for search results timed out.");
+            return false;
+        }
     }
 
     private async Task<List<string>> LoadKeywordsAsync(string? directory, CancellationToken token)

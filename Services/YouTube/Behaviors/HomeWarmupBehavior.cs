@@ -38,6 +38,12 @@ internal sealed class HomeWarmupBehavior : IYouTubeWarmupBehavior
 
         await context.NavigateToHomeAsync(config, token);
 
+        if (!await WaitForHomeFeedAsync(page, token))
+        {
+            _logger?.LogWarning("Home feed did not return any clickable videos.");
+            return false;
+        }
+
         var items = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer a#thumbnail, ytd-rich-item-renderer #video-title-link");
         int count = await items.CountAsync();
         if (count == 0)
@@ -50,6 +56,7 @@ internal sealed class HomeWarmupBehavior : IYouTubeWarmupBehavior
         var item = items.Nth(index);
         try
         {
+            await item.ScrollIntoViewIfNeededAsync();
             await mouse.MoveAndClickAsync(item);
             await context.WaitForNavigationAsync(token);
         }
@@ -62,5 +69,21 @@ internal sealed class HomeWarmupBehavior : IYouTubeWarmupBehavior
         await context.WatchVideoAsync(config, token);
         context.IncrementHomeInteractions();
         return true;
+    }
+
+    private async Task<bool> WaitForHomeFeedAsync(IPage page, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var gridItems = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer");
+            await gridItems.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+            return true;
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogDebug(ex, "Timed out waiting for YouTube home feed.");
+            return false;
+        }
     }
 }

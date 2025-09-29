@@ -40,6 +40,12 @@ internal class VideoPlayerActivity
 
         _logger?.LogInformation("Watching current YouTube video for {Duration}.", watchDuration);
 
+        if (!await _controls.WaitForPlayerReadyAsync(cancellationToken))
+        {
+            _logger?.LogWarning("Timed out waiting for YouTube player to become ready.");
+            return;
+        }
+
         bool playerReady = await _controls.EnsurePlayerVisibleAsync();
         if (!playerReady)
         {

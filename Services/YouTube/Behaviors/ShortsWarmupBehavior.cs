@@ -42,6 +42,12 @@ internal sealed class ShortsWarmupBehavior : IYouTubeWarmupBehavior
             return false;
         }
 
+        if (!await WaitForShortsPlayerAsync(context, token))
+        {
+            _logger?.LogWarning("Unable to detect Shorts player after navigation.");
+            return false;
+        }
+
         int sequenceLength = context.Random.Next(
             Math.Max(1, config.MinShortSequenceLength),
             Math.Max(Math.Max(1, config.MinShortSequenceLength), config.MaxShortSequenceLength) + 1);
@@ -59,6 +65,11 @@ internal sealed class ShortsWarmupBehavior : IYouTubeWarmupBehavior
                 string key = context.Random.NextDouble() < 0.65 ? "ArrowDown" : "PageDown";
                 await page.Keyboard.PressAsync(key);
                 await Task.Delay(context.Random.Next(800, 1600), token);
+                if (!await WaitForShortsPlayerAsync(context, token))
+                {
+                    _logger?.LogDebug("Shorts player did not become ready after advancing.");
+                    break;
+                }
             }
         }
 
@@ -110,5 +121,28 @@ internal sealed class ShortsWarmupBehavior : IYouTubeWarmupBehavior
             _logger?.LogWarning(ex, "Failed to open Shorts experience at {Url}.", fallback);
             return false;
         }
+    }
+
+    private async Task<bool> WaitForShortsPlayerAsync(WarmupContext context, CancellationToken token)
+    {
+        var page = context.Page;
+        if (page == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var player = page.Locator("#shorts-player video, #reel-video-renderer video, video.html5-main-video");
+            await player.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogDebug(ex, "Shorts player did not become visible in time.");
+            return false;
+        }
+
+        return await context.PlayerControls.WaitForPlayerReadyAsync(token, 12000);
     }
 }

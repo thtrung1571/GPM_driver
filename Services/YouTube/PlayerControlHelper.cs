@@ -59,6 +59,57 @@ internal class PlayerControlHelper
         }
     }
 
+    public async Task<bool> WaitForPlayerReadyAsync(CancellationToken cancellationToken, int timeoutMilliseconds = 15000)
+    {
+        DateTime deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(1000, timeoutMilliseconds));
+
+        while (DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (await EnsurePlayerVisibleAsync())
+            {
+                try
+                {
+                    bool ready = await _page.EvaluateAsync<bool>(
+                        @"() => {
+                            const player = document.querySelector('#movie_player, .html5-video-player, ytd-player');
+                            const video = document.querySelector('video.html5-main-video')
+                                || document.querySelector('#shorts-player video')
+                                || document.querySelector('#reel-video-renderer video');
+                            if (!player || !video) {
+                                return false;
+                            }
+                            if (player.classList?.contains('ad-showing') || player.classList?.contains('ad-interrupting')) {
+                                return false;
+                            }
+                            if (video.readyState >= 2 && !video.paused) {
+                                return true;
+                            }
+                            if (video.readyState >= 2) {
+                                try { video.play?.(); } catch (e) { }
+                            }
+                            return false;
+                        }");
+
+                    if (ready)
+                    {
+                        return true;
+                    }
+                }
+                catch (PlaywrightException ex)
+                {
+                    _logger?.LogTrace(ex, "Player readiness check failed.");
+                }
+            }
+
+            await DelayAsync(_random.Next(250, 450), cancellationToken);
+        }
+
+        _logger?.LogDebug("Timed out waiting for YouTube player to become ready.");
+        return false;
+    }
+
     public async Task<bool> HandleAdsAsync(CancellationToken cancellationToken)
     {
         if (!await IsAdShowingAsync(cancellationToken))

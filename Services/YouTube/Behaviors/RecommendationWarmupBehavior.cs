@@ -87,6 +87,12 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
 
         await context.NavigateToHomeAsync(config, token);
 
+        if (!await WaitForHomeFeedAsync(page, token))
+        {
+            _logger?.LogWarning("Home feed did not return any clickable videos for recommendation chain.");
+            return false;
+        }
+
         var items = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer a#thumbnail, ytd-rich-item-renderer #video-title-link");
         int count = await items.CountAsync();
         if (count == 0)
@@ -99,6 +105,7 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
         var item = items.Nth(index);
         try
         {
+            await item.ScrollIntoViewIfNeededAsync();
             await mouse.MoveAndClickAsync(item);
             await context.WaitForNavigationAsync(token);
         }
@@ -121,6 +128,12 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
             return;
         }
 
+        if (!await WaitForRecommendationPanelAsync(page, token))
+        {
+            _logger?.LogDebug("No recommendation thumbnails available to follow.");
+            return;
+        }
+
         var recommendations = page.Locator("#items ytd-compact-video-renderer a#thumbnail, #secondary ytd-compact-video-renderer #video-title");
         int count = await recommendations.CountAsync();
         if (count == 0)
@@ -134,12 +147,45 @@ internal sealed class RecommendationWarmupBehavior : IYouTubeWarmupBehavior
 
         try
         {
+            await recommendation.ScrollIntoViewIfNeededAsync();
             await mouse.MoveAndClickAsync(recommendation);
             await context.WaitForNavigationAsync(token);
         }
         catch (PlaywrightException ex)
         {
             _logger?.LogDebug(ex, "Failed to follow recommendation at index {Index}.", index);
+        }
+    }
+
+    private async Task<bool> WaitForHomeFeedAsync(IPage page, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var gridItems = page.Locator("ytd-rich-grid-row ytd-rich-item-renderer");
+            await gridItems.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 12000 });
+            return true;
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogDebug(ex, "Timed out waiting for YouTube home feed before recommendation chain.");
+            return false;
+        }
+    }
+
+    private async Task<bool> WaitForRecommendationPanelAsync(IPage page, CancellationToken token)
+    {
+        try
+        {
+            token.ThrowIfCancellationRequested();
+            var panelItems = page.Locator("#items ytd-compact-video-renderer, #secondary ytd-compact-video-renderer");
+            await panelItems.First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 10000 });
+            return true;
+        }
+        catch (PlaywrightException ex)
+        {
+            _logger?.LogDebug(ex, "Timed out waiting for recommendation panel items.");
+            return false;
         }
     }
 }
