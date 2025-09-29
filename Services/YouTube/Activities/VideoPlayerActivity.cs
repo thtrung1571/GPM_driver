@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using GPM_driver.Helpers;
@@ -55,6 +57,11 @@ internal class VideoPlayerActivity
 
         var stopAt = DateTime.UtcNow + watchDuration;
         bool firstLoop = true;
+        int actionsPerformed = 0;
+        int maxInteractions = DetermineMaxInteractionsPerVideo();
+        var actionCounts = new Dictionary<PlayerControlHelper.PlayerControlAction, int>();
+        var failedActions = new HashSet<PlayerControlHelper.PlayerControlAction>();
+        var disabledActions = SelectActionsToDisable();
 
         while (DateTime.UtcNow < stopAt)
         {
@@ -66,18 +73,154 @@ internal class VideoPlayerActivity
                 continue;
             }
 
+            if (await _controls.IsAdOverlayBlockingControlsAsync(cancellationToken))
+            {
+                await _controls.TrySkipAdAsync(cancellationToken);
+                await _controls.DelayAsync(_random.Next(450, 850), cancellationToken);
+                continue;
+            }
+
             if (firstLoop)
             {
                 await _controls.EnsureVideoPlayingAsync(cancellationToken);
                 firstLoop = false;
             }
 
-            await _controls.PerformRandomControlActionAsync(cancellationToken);
+            bool interactionsAllowed = maxInteractions > 0 && actionsPerformed < maxInteractions;
+            bool shouldAct = interactionsAllowed && _random.NextDouble() > 0.65;
 
-            int delay = _random.Next(MinDelayBetweenActionsMs, MaxDelayBetweenActionsMs + 1);
+            int delay = ComputeNextDelay();
+
+            if (!shouldAct)
+            {
+                await _controls.DelayAsync(delay, cancellationToken);
+                continue;
+            }
+
+            PlayerControlHelper.PlayerControlAction? action = ChooseNextAction(actionCounts, failedActions, disabledActions);
+
+            if (action is null)
+            {
+                await _controls.DelayAsync(delay, cancellationToken);
+                continue;
+            }
+
+            bool success = await _controls.TryPerformActionAsync(action.Value, cancellationToken);
+            if (success)
+            {
+                actionsPerformed++;
+                actionCounts[action.Value] = actionCounts.TryGetValue(action.Value, out int count) ? count + 1 : 1;
+            }
+            else
+            {
+                failedActions.Add(action.Value);
+            }
+
             await _controls.DelayAsync(delay, cancellationToken);
         }
 
+        await _controls.ExitFullScreenAsync(cancellationToken);
         _logger?.LogInformation("Completed watch routine on {Url}.", _page.Url);
+    }
+
+    private int ComputeNextDelay()
+    {
+        int min = Math.Max(1500, Math.Min(MinDelayBetweenActionsMs, MaxDelayBetweenActionsMs));
+        int max = Math.Max(min + 500, Math.Max(MinDelayBetweenActionsMs, MaxDelayBetweenActionsMs));
+        return _random.Next(min, max + 1);
+    }
+
+    private int DetermineMaxInteractionsPerVideo()
+    {
+        double roll = _random.NextDouble();
+        return roll switch
+        {
+            < 0.35 => 0,
+            < 0.7 => 1,
+            < 0.9 => 2,
+            _ => 3
+        };
+    }
+
+    private HashSet<PlayerControlHelper.PlayerControlAction> SelectActionsToDisable()
+    {
+        var disabled = new HashSet<PlayerControlHelper.PlayerControlAction>();
+
+        foreach (var action in PlayerControlHelper.DefaultActionWeights.Keys)
+        {
+            double chance = action switch
+            {
+                PlayerControlHelper.PlayerControlAction.AdjustVolumeSlider => 0.65,
+                PlayerControlHelper.PlayerControlAction.AdjustVolumeKeys => 0.55,
+                PlayerControlHelper.PlayerControlAction.ChangePlaybackSpeed => 0.6,
+                PlayerControlHelper.PlayerControlAction.ToggleTheaterMode => 0.5,
+                PlayerControlHelper.PlayerControlAction.ToggleFullScreen => 0.45,
+                PlayerControlHelper.PlayerControlAction.ToggleMute => 0.45,
+                PlayerControlHelper.PlayerControlAction.SeekRelative => 0.35,
+                PlayerControlHelper.PlayerControlAction.TogglePlayPause => 0.3,
+                _ => 0.5
+            };
+
+            if (_random.NextDouble() < chance)
+            {
+                disabled.Add(action);
+            }
+        }
+
+        if (disabled.Count >= PlayerControlHelper.DefaultActionWeights.Count)
+        {
+            var actions = PlayerControlHelper.DefaultActionWeights.Keys.ToList();
+            disabled.Remove(actions[_random.Next(actions.Count)]);
+        }
+
+        return disabled;
+    }
+
+    private PlayerControlHelper.PlayerControlAction? ChooseNextAction(
+        IDictionary<PlayerControlHelper.PlayerControlAction, int> counts,
+        ISet<PlayerControlHelper.PlayerControlAction> failed,
+        ISet<PlayerControlHelper.PlayerControlAction> disabled)
+    {
+        var candidates = new List<(PlayerControlHelper.PlayerControlAction Action, double Weight)>();
+
+        foreach (var kvp in PlayerControlHelper.DefaultActionWeights)
+        {
+            if (disabled.Contains(kvp.Key))
+            {
+                continue;
+            }
+
+            if (failed.Contains(kvp.Key))
+            {
+                continue;
+            }
+
+            if (counts.TryGetValue(kvp.Key, out int count) && count >= 2)
+            {
+                continue;
+            }
+
+            double jitter = 0.75 + (_random.NextDouble() * 0.5);
+            candidates.Add((kvp.Key, kvp.Value * jitter));
+        }
+
+        if (candidates.Count == 0)
+        {
+            return null;
+        }
+
+        double total = candidates.Sum(c => c.Weight);
+        double roll = _random.NextDouble() * total;
+
+        foreach (var candidate in candidates)
+        {
+            roll -= candidate.Weight;
+            if (roll <= 0)
+            {
+                return candidate.Action;
+            }
+        }
+
+        return candidates.Last().Action;
     }
 }

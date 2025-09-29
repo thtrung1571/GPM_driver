@@ -14,13 +14,39 @@ namespace GPM_driver.Services.YouTube;
 /// </summary>
 internal class PlayerControlHelper
 {
+    internal enum PlayerControlAction
+    {
+        TogglePlayPause,
+        ToggleMute,
+        AdjustVolumeSlider,
+        AdjustVolumeKeys,
+        SeekRelative,
+        ToggleFullScreen,
+        ToggleTheaterMode,
+        ChangePlaybackSpeed
+    }
+
     private static readonly string[] SkipButtonSelectors =
     {
         "button.ytp-ad-skip-button-modern",
         ".ytp-ad-skip-button",
         ".ytp-ad-skip-button-container button",
-        "button.ytp-skip-ad-button"
+        "button.ytp-skip-ad-button",
+        ".ytp-skip-ad-button"
     };
+
+    private static readonly IReadOnlyDictionary<PlayerControlAction, double> DefaultWeights =
+        new Dictionary<PlayerControlAction, double>
+        {
+            [PlayerControlAction.TogglePlayPause] = 1.0,
+            [PlayerControlAction.SeekRelative] = 0.85,
+            [PlayerControlAction.ToggleMute] = 0.65,
+            [PlayerControlAction.AdjustVolumeKeys] = 0.55,
+            [PlayerControlAction.ChangePlaybackSpeed] = 0.45,
+            [PlayerControlAction.ToggleTheaterMode] = 0.35,
+            [PlayerControlAction.AdjustVolumeSlider] = 0.30,
+            [PlayerControlAction.ToggleFullScreen] = 0.25
+        };
 
     private readonly IPage _page;
     private readonly MouseHelper _mouseHelper;
@@ -33,6 +59,8 @@ internal class PlayerControlHelper
         _mouseHelper = mouseHelper ?? new MouseHelper(page);
         _logger = logger;
     }
+
+    public static IReadOnlyDictionary<PlayerControlAction, double> DefaultActionWeights => DefaultWeights;
 
     public async Task<bool> EnsurePlayerVisibleAsync()
     {
@@ -112,7 +140,12 @@ internal class PlayerControlHelper
 
     public async Task<bool> HandleAdsAsync(CancellationToken cancellationToken)
     {
-        if (!await IsAdShowingAsync(cancellationToken))
+        if (await TrySkipAdAsync(cancellationToken))
+        {
+            return true;
+        }
+
+        if (!await IsAdShowingAsync(cancellationToken) && !await IsAdOverlayBlockingControlsAsync(cancellationToken))
         {
             return false;
         }
@@ -123,7 +156,7 @@ internal class PlayerControlHelper
         }
 
         _logger?.LogDebug("Ad playing without skip option; waiting briefly.");
-        await DelayAsync(_random.Next(1200, 2200), cancellationToken);
+        await WaitForAdToFinishAsync(cancellationToken);
         return true;
     }
 
@@ -132,7 +165,7 @@ internal class PlayerControlHelper
         foreach (string selector in SkipButtonSelectors)
         {
             var locator = _page.Locator(selector);
-            if (!await locator.IsVisibleAsync(new() { Timeout = 100 }))
+            if (!await locator.IsVisibleAsync(new() { Timeout = 200 }))
             {
                 continue;
             }
@@ -174,20 +207,36 @@ internal class PlayerControlHelper
         }
     }
 
+    public async Task<bool> IsAdOverlayBlockingControlsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var overlay = _page.Locator("div.video-ads.ytp-ad-module");
+            return await overlay.IsVisibleAsync(new() { Timeout = 100 });
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
+    }
+
     public async Task WaitForAdToFinishAsync(CancellationToken cancellationToken)
     {
         var start = DateTime.UtcNow;
-        while (DateTime.UtcNow - start < TimeSpan.FromSeconds(20))
+        while (DateTime.UtcNow - start < TimeSpan.FromSeconds(45))
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!await IsAdShowingAsync(cancellationToken))
+            bool adShowing = await IsAdShowingAsync(cancellationToken);
+            bool overlayBlocking = await IsAdOverlayBlockingControlsAsync(cancellationToken);
+
+            if (!adShowing && !overlayBlocking)
             {
                 await DelayAsync(_random.Next(300, 700), cancellationToken);
                 return;
             }
 
-            await DelayAsync(_random.Next(500, 900), cancellationToken);
+            await DelayAsync(_random.Next(600, 900), cancellationToken);
         }
     }
 
@@ -221,6 +270,7 @@ internal class PlayerControlHelper
 
         try
         {
+            await _mouseHelper.MoveToAsync(slider);
             await slider.ClickAsync(new() { Position = new() { X = offsetX, Y = offsetY } });
             _logger?.LogTrace("Adjusted volume slider to {Ratio:P0}.", ratio);
             return true;
@@ -287,6 +337,38 @@ internal class PlayerControlHelper
         }
     }
 
+    public async Task<bool> IsFullScreenActiveAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            return await _page.EvaluateAsync<bool>(
+                "() => {\n                    const player = document.querySelector('#movie_player, .html5-video-player, ytd-player');\n                    if (document.fullscreenElement) {\n                        return true;\n                    }\n                    return Boolean(player?.classList?.contains('ytp-fullscreen'));\n                }");
+        }
+        catch (PlaywrightException)
+        {
+            return false;
+        }
+    }
+
+    public async Task ExitFullScreenAsync(CancellationToken cancellationToken)
+    {
+        if (!await IsFullScreenActiveAsync(cancellationToken))
+        {
+            return;
+        }
+
+        bool toggled = await NavigationPattern.TryPressAsync(_page, "f", logger: _logger, cancellationToken: cancellationToken);
+        await DelayAsync(_random.Next(200, 400), cancellationToken);
+
+        if (!toggled || await IsFullScreenActiveAsync(cancellationToken))
+        {
+            await NavigationPattern.TryPressAsync(_page, "Escape", logger: _logger, cancellationToken: cancellationToken);
+            await DelayAsync(_random.Next(200, 400), cancellationToken);
+        }
+    }
+
     public async Task DelayAsync(int milliseconds, CancellationToken cancellationToken)
     {
         if (milliseconds <= 0)
@@ -319,32 +401,34 @@ internal class PlayerControlHelper
         }
     }
 
-    public async Task PerformRandomControlActionAsync(CancellationToken cancellationToken)
+    public async Task<bool> TryPerformActionAsync(PlayerControlAction action, CancellationToken cancellationToken)
     {
-        var actions = new List<Func<CancellationToken, Task<bool>>>
+        if (await IsAdOverlayBlockingControlsAsync(cancellationToken))
         {
-            TogglePlayPauseAsync,
-            ToggleMuteAsync,
-            AdjustVolumeViaSliderAsync,
-            AdjustVolumeViaKeysAsync,
-            async token => await SeekRelativeAsync(_random.NextDouble() * 0.3 - 0.15, token),
-            ToggleFullScreenAsync,
-            ToggleTheaterModeAsync,
-            ChangePlaybackSpeedAsync
-        };
+            return false;
+        }
 
-        int attempts = 0;
-        while (attempts < actions.Count)
+        switch (action)
         {
-            int index = _random.Next(actions.Count);
-            var action = actions[index];
-            bool success = await action(cancellationToken);
-            if (success)
-            {
-                return;
-            }
-
-            attempts++;
+            case PlayerControlAction.TogglePlayPause:
+                return await TogglePlayPauseAsync(cancellationToken);
+            case PlayerControlAction.ToggleMute:
+                return await ToggleMuteAsync(cancellationToken);
+            case PlayerControlAction.AdjustVolumeSlider:
+                return await AdjustVolumeViaSliderAsync(cancellationToken);
+            case PlayerControlAction.AdjustVolumeKeys:
+                return await AdjustVolumeViaKeysAsync(cancellationToken);
+            case PlayerControlAction.SeekRelative:
+                double delta = _random.NextDouble() * 0.25 - 0.125;
+                return await SeekRelativeAsync(delta, cancellationToken);
+            case PlayerControlAction.ToggleFullScreen:
+                return await ToggleFullScreenAsync(cancellationToken);
+            case PlayerControlAction.ToggleTheaterMode:
+                return await ToggleTheaterModeAsync(cancellationToken);
+            case PlayerControlAction.ChangePlaybackSpeed:
+                return await ChangePlaybackSpeedAsync(cancellationToken);
+            default:
+                return false;
         }
     }
 }
